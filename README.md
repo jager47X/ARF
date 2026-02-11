@@ -423,7 +423,7 @@ Contributions are welcome! Please:
 
 ## License
 
-[Specify your license here]
+This project is licensed under MIT License
 
 ## Acknowledgments
 
