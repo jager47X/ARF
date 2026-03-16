@@ -32,8 +32,9 @@ import sys
 import time
 from pathlib import Path
 
-# Add project root to path
+# Add project root to path and set up services.rag import shim
 sys.path.insert(0, str(Path(__file__).parent.parent))
+import standalone_setup  # noqa: F401 — patches sys.modules for services.rag.*
 
 from benchmarks.metrics import compute_all_metrics, mrr
 from benchmarks.cost_tracker import CostTracker
