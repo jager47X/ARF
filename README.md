@@ -18,7 +18,11 @@ Most RAG pipelines rely on expensive LLM calls to rerank and verify retrieval re
 
 **Key innovations:**
 - **Learned retrieval > LLM reranking** — A small MLP trained on 3,600 labeled pairs achieves +40% MRR over LLM verification, at zero cost. The MLP sees the entire candidate distribution and learns cross-feature relevance patterns that per-document LLM scoring cannot capture.
-- **R-Flow pipeline** — Multi-stage filtering (semantic search + feature extraction + MLP scoring + LLM fallback only for uncertain 20%) eliminates unnecessary computation at each layer.
+- **R-Flow pipeline** — Each stage filters candidates so the next stage does less work:
+  1. **Keyword matching** — Structured pattern detection (e.g., "Article I Section 8", "14th Amendment") maps directly to known documents, bypassing semantic search entirely for exact references.
+  2. **Threshold gates (ABC Gates)** — Score-based routing: `≥ 0.85` → accept immediately, `< 0.70` → reject immediately, `0.70–0.85` → pass to next stage. Eliminates ~60% of candidates without any LLM call.
+  3. **MLP Reranker** — A 128-64-32 MLP trained on 3,600 labeled pairs scores borderline candidates in <5ms at $0.00. Confidently accepts (p ≥ 0.6) or rejects (p ≤ 0.4) ~80% of remaining candidates.
+  4. **LLM Fallback** — Only the ~20% of candidates where the MLP is uncertain (0.4 < p < 0.6) go to the LLM verifier. This is the only stage that costs money, and it handles the smallest batch.
 - **Domain-specific thresholds** — Each legal domain (US Constitution, CFR, US Code, USCIS Policy) has independently tuned thresholds and bias maps, avoiding one-size-fits-all degradation.
 - **Aggressive caching** — Embedding, result, and summary caching makes repeated/similar queries cost $0.00 with ~500ms latency. Cost stays flat as query volume grows.
 - **Automated retraining** — Monthly pipeline exports new LLM judgments from production, retrains the MLP, and only deploys if performance improves.
