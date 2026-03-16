@@ -216,7 +216,7 @@ class AliasManager:
             try:
                 self._stop = set(stopwords.words("english"))
                 logger.debug("[ALIAS][clean] NLTK stopwords loaded (size=%d)", len(self._stop))
-            except (LookupError, OSError) as e:
+            except (LookupError, OSError):
                 # Try to download stopwords if not available
                 try:
                     logger.info("[ALIAS][clean] NLTK stopwords not found, attempting to download...")
@@ -291,8 +291,10 @@ class AliasManager:
                 if not np.isfinite(sim):
                     continue
                 # clamp just in case
-                if sim > 1.0: sim = 1.0
-                if sim < -1.0: sim = -1.0
+                if sim > 1.0:
+                    sim = 1.0
+                if sim < -1.0:
+                    sim = -1.0
                 sims.append((alias, name, sim))
             except Exception as e:
                 n_err += 1
@@ -348,9 +350,11 @@ class AliasManager:
             "eighteenth":18,"nineteenth":19,"twentieth":20,"twenty-first":21,"twenty-second":22,"twenty-third":23,
             "twenty-fourth":24,"twenty-fifth":25,"twenty-sixth":26,"twenty-seventh":27
         }
-        def to_ord(n:int)->str:
-            if 11 <= (n % 100) <= 13: suf="th"
-            else: suf={1:"st",2:"nd",3:"rd"}.get(n%10,"th")
+        def to_ord(n: int) -> str:
+            if 11 <= (n % 100) <= 13:
+                suf = "th"
+            else:
+                suf = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
             return f"{n}{suf}"
 
         # Use [a-zA-Z -]+ to explicitly match both uppercase and lowercase letters
@@ -397,7 +401,8 @@ class AliasManager:
             out=[]
             for v,sym in vals:
                 while n>=v:
-                    out.append(sym); n-=v
+                    out.append(sym)
+                    n -= v
             return "".join(out)
 
         m = re.match(r"(?i)^\s*Article\s+([ivxlcdm]+|\d+)(?:\s*(?:Section|§)\s*(\d+))?\s*$", (ref or "").strip())

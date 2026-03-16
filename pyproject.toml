@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Advanced Retrieval Framework — a RAG system optimized for legal document search"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.24",
     "openai>=1.0",
@@ -23,6 +23,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.4",
 ]
 
 [tool.setuptools.packages.find]
@@ -30,6 +32,7 @@ include = ["rag_dependencies*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--cov=rag_dependencies --cov-report=term-missing --cov-fail-under=15"
 
 [tool.ruff]
 target-version = "py310"
@@ -37,14 +40,10 @@ line-length = 120
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
-# Ignore rules that conflict with the existing codebase style
 ignore = [
-    "E501",   # line too long (existing code exceeds limits)
-    "E741",   # ambiguous variable names (existing code uses these)
-    "F401",   # unused imports (some are re-exports)
-    "F841",   # unused variables (some are intentional)
-    "W605",   # invalid escape sequence (existing regex patterns)
-    "E402",   # module-level import not at top (preprocess scripts manipulate sys.path first)
-    "E701",   # multiple statements on one line with colon (existing compact style)
-    "E702",   # multiple statements on one line with semicolon (existing compact style)
+    "E501",   # line too long (381 violations — fix incrementally)
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# Preprocess scripts manipulate sys.path before imports and use compact one-liners
+"preprocess/**/*.py" = ["E402", "E701", "E702", "F401", "F841"]

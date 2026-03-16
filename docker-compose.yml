@@ -25,6 +25,13 @@ services:
     working_dir: /app
     command: ["python", "-m", "pytest", "tests/", "-v"]
 
+  lint:
+    build: .
+    volumes:
+      - .:/app
+    working_dir: /app
+    command: ["python", "-m", "ruff", "check", "."]
+
   validate-config:
     build: .
     env_file: .env

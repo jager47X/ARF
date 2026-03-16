@@ -39,8 +39,16 @@ Thumbs.db
 # Benchmark results (generated)
 benchmarks/results/
 
-# Model artifacts
+# Benchmark caches (generated)
+benchmarks/features_cache.json
+
+# Model artifacts (binary)
 models/*.pt
 models/*.bin
 models/*.onnx
 models/*.pkl
+models/*.joblib
+
+# Coverage reports
+.coverage
+htmlcov/

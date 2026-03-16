@@ -9,9 +9,8 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
-from bson import ObjectId
 from pymongo.collection import Collection
-from pymongo.errors import ExecutionTimeout, NetworkTimeout, OperationFailure
+from pymongo.errors import ExecutionTimeout, NetworkTimeout, OperationFailure, PyMongoError
 
 logger = logging.getLogger(__name__)
 
@@ -272,7 +271,7 @@ class VectorSearch:
                     # Check if sections have embeddings
                     if any(s.get("embedding") for s in sample_doc["sections"] if isinstance(s, dict)):
                         subdoc_paths.append("sections.embedding")
-        except Exception as e:
+        except PyMongoError as e:
             logger.debug("Could not detect subdocument structure: %s", e)
 
         # If no subdocument paths detected, try both (one may work, or both will fail gracefully)
@@ -354,11 +353,10 @@ class VectorSearch:
 
                     subdoc_results.append((doc, adjusted_score))
 
-            except Exception as e:
+            except (OperationFailure, NetworkTimeout, ExecutionTimeout) as e:
                 logger.debug("Subdocument-level vector search failed for path %s (this is expected if index doesn't include this path): %s", subdoc_path, e)
 
         # Track which documents came from which search type
-        doc_ids_from_doc_level: set = {doc.get("_id") for doc, _ in doc_results if doc.get("_id")}
         doc_ids_from_subdoc_level: set = {doc.get("_id") for doc, _ in subdoc_results if doc.get("_id")}
 
         # Merge and deduplicate results by document _id
