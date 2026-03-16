@@ -8,13 +8,7 @@
 
 **What makes ARF different from other RAG systems:**
 
-Most RAG pipelines rely on expensive LLM calls to rerank and verify retrieval results. ARF proves this is unnecessary. A lightweight **MLP reranker** (128-64-32 neurons, <5ms, $0.00/query) trained on domain-specific features **outperforms LLM-based reranking** (GPT-4o, ~500ms, $0.004/query) by a wide margin:
-
-| | MRR | P@1 | R@5 | Cost/Query | Latency |
-|---|-----|-----|-----|------------|---------|
-| Semantic search alone | 0.665 | 0.600 | 0.613 | $0.00 | 408ms |
-| + LLM reranking | 0.665 | 0.600 | 0.613 | $0.004 | 453ms |
-| **+ MLP reranking** | **0.933** | **0.933** | **0.900** | **$0.00** | **714ms** |
+Most RAG pipelines rely on expensive LLM calls to rerank and verify retrieval results. ARF proves this is unnecessary. A lightweight **MLP reranker** (128-64-32 neurons, <5ms, $0.00/query) trained on domain-specific features **outperforms LLM-based reranking** (GPT-4o, ~500ms, $0.004/query) by a wide margin.
 
 **Key innovations:**
 - **Learned retrieval > LLM reranking** — A small MLP trained on 3,600 labeled pairs achieves +40% MRR over LLM verification, at zero cost. The MLP sees the entire candidate distribution and learns cross-feature relevance patterns that per-document LLM scoring cannot capture.
@@ -123,50 +117,50 @@ ARF/
 
 ```mermaid
 flowchart TD
-    A["User Query\n(en / es)"] --> B{"Language?"}
+    A["User Query<br/>(en / es)"] --> B{"Language?"}
     B -- es --> C["Translate to English"]
     B -- en --> D["Normalize Query"]
     C --> D
 
-    D --> E["Get / Create Embedding\n(Voyage-3-large, 1024d)"]
-    E --> F{"Cached results\nexist?"}
-    F -- yes --> G["Return cached results\n(skip all LLM calls)"]
+    D --> E["Get / Create Embedding<br/>(Voyage-3-large, 1024d)"]
+    E --> F{"Cached results<br/>exist?"}
+    F -- yes --> G["Return cached results<br/>(skip all LLM calls)"]
 
-    F -- no --> H["OpenAI Omni\nModeration Check"]
+    F -- no --> H["OpenAI Omni<br/>Moderation Check"]
     H -- flagged --> I["Reject query"]
     H -- pass --> J["fix_query via LLM"]
 
     J --> K["Multi-Strategy Search"]
 
-    K --> K1["Semantic Vector Search\n(MongoDB Atlas)"]
-    K --> K2{"Alias search\nenabled?"}
-    K --> K3{"Keyword matcher\nenabled?"}
-    K2 -- yes --> K2a["Alias Embedding\nCosine Similarity"]
-    K3 -- yes --> K3a["Article / Section\nPattern Match"]
+    K --> K1["Semantic Vector Search<br/>(MongoDB Atlas)"]
+    K --> K2{"Alias search<br/>enabled?"}
+    K --> K3{"Keyword matcher<br/>enabled?"}
+    K2 -- yes --> K2a["Alias Embedding<br/>Cosine Similarity"]
+    K3 -- yes --> K3a["Article / Section<br/>Pattern Match"]
 
     K1 --> L["Merge & Score"]
     K2a --> L
     K3a --> L
 
-    L --> M{"score >= RAG_SEARCH\n(0.85)?"}
+    L --> M{"score >= RAG_SEARCH<br/>(0.85)?"}
     M -- yes --> N["Accept result"]
-    M -- no --> O{"score >= LLM_VERIF\n(0.70)?"}
-    O -- yes --> MLP{"MLP Reranker\n(learned model)"}
-    MLP -- "confident accept\n(p >= 0.6)" --> N
-    MLP -- "confident reject\n(p <= 0.4)" --> Q
-    MLP -- "uncertain\n(0.4 < p < 0.6)" --> P["LLM Reranking\n(fallback only)"]
-    O -- no --> Q{"Rephrase\nattempts left?"}
+    M -- no --> O{"score >= LLM_VERIF<br/>(0.70)?"}
+    O -- yes --> MLP{"MLP Reranker<br/>(learned model)"}
+    MLP -- "confident accept<br/>(p >= 0.6)" --> N
+    MLP -- "confident reject<br/>(p <= 0.4)" --> Q
+    MLP -- "uncertain<br/>(0.4 < p < 0.6)" --> P["LLM Reranking<br/>(fallback only)"]
+    O -- no --> Q{"Rephrase<br/>attempts left?"}
     P -- verified --> N
     P -- rejected --> Q
-    Q -- yes --> R["Rephrase query\nvia LLM"] --> E
+    Q -- yes --> R["Rephrase query<br/>via LLM"] --> E
     Q -- no --> S["Return empty"]
 
-    N --> T{"score >= confident\n(0.85)?"}
-    T -- yes --> U["Cache results +\nGenerate & cache summary"]
-    T -- no --> V["Return results\n(no cache)"]
-    U --> W["Gap Filter\n(remove outliers)"]
+    N --> T{"score >= confident<br/>(0.85)?"}
+    T -- yes --> U["Cache results +<br/>Generate & cache summary"]
+    T -- no --> V["Return results<br/>(no cache)"]
+    U --> W["Gap Filter<br/>(remove outliers)"]
     V --> W
-    W --> X["Return ranked results\n+ bilingual summary"]
+    W --> X["Return ranked results<br/>+ bilingual summary"]
 ```
 
 #### Pipeline Stages
