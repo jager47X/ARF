@@ -1,9 +1,11 @@
 # src/rag/query_processor.py
 from __future__ import annotations
+
 import logging
-from typing import Any, Dict, List, Tuple, Optional, Union, Sequence
-from bson import ObjectId
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+
+from bson import ObjectId
 
 logger = logging.getLogger(__name__)
 Doc = Dict[str, Any]
@@ -38,7 +40,7 @@ class QueryProcessor:
         regenerate (both in generate_summary() and when attaching explanations).
     """
     def __init__(self, rag,debug_mode):
-        
+
         self.rag = rag
         self.sql=self.rag.sql
         self.cfg = self.rag.config
@@ -55,7 +57,7 @@ class QueryProcessor:
             self.LLM_SCORE  = float(self.thr.get('LLM_SCORE'))
             self.CONFIDENT  = float(self.thr.get('confident'))
             # No hybrid search weights - using ABC gate only (semantic search + ABC gates)
-            
+
             self.REPHRASE_LIMIT = int(self.cfg.get("REPHRASE_LIMIT", 3))
             self.vector_search = self.rag.vector_search
             self.kw     = self.rag.keyword
@@ -106,7 +108,7 @@ class QueryProcessor:
         # Store original query for display purposes
         original_query = query
         self._language = language  # Store language for cache hit tracking
-        
+
         # Translate Spanish queries to English for search
         # Always search in English, but preserve original for response
         search_query = query
@@ -118,8 +120,8 @@ class QueryProcessor:
                 logger.info(f"[RAG][TRANSLATE] Spanish query translated: {query[:50]}... -> {translated[:50]}...")
                 search_query = translated
             else:
-                logger.info(f"[RAG][TRANSLATE] Query translation skipped or failed, using original")
-        
+                logger.info("[RAG][TRANSLATE] Query translation skipped or failed, using original")
+
         # Use translated query for search, but return original in response
         current_text = search_query
         root_original_text = search_query
@@ -127,10 +129,10 @@ class QueryProcessor:
         previous_rephrases: List[str] = []
         current_decay = 0.0
         rephrase_count = 0  # Track actual number of rephrases performed (enforce REPHRASE_LIMIT)
-        
+
         # Store original query for return value
         self._original_query = original_query
-        
+
         # Reset request-level caches for this new query processing
         self._cached_query_embedding = None
         self._request_insight_cache = {}
@@ -151,26 +153,93 @@ class QueryProcessor:
                 self.db.normalize_query(current_text),
             )
 
-            # ---------- 1) EMBEDDING FIRST ----------
+            # ---------- 1) EMBEDDING + CACHE (single doc fetch) ----------
             embed_text = self.db.normalize_query(current_text)
             logger.info("[RAG][EMB][GET] text=%r", current_text)
-            emb, cached = self.qm.get_or_create_query_embedding(
-                embed_text, self.db, previous_rephrases
-            )
-            logger.info(
-                "[RAG][EMB][RES] cached=%s have_emb=%s",
-                cached,
-                bool(emb is not None),
-            )
+
+            # OPTIMIZATION: fetch query doc ONCE for both embedding and cache check
+            query_doc = self.db.find_query_doc_ci(embed_text)
+
+            if query_doc and query_doc.get("embedding") is not None:
+                import numpy as np
+                emb = np.array(query_doc["embedding"], dtype=np.float32).ravel()
+                cached = True
+                logger.info("[RAG][EMB][RES] cached=True have_emb=True (single-fetch)")
+            else:
+                emb, cached = self.qm.get_or_create_query_embedding(
+                    embed_text, self.db, previous_rephrases
+                )
+                logger.info(
+                    "[RAG][EMB][RES] cached=%s have_emb=%s",
+                    cached,
+                    bool(emb is not None),
+                )
+                # Re-fetch doc if we just created it
+                if not query_doc:
+                    query_doc = self.db.find_query_doc_ci(embed_text)
 
             cache_used = False
 
-            # ---------- 2) CACHE FAST-PATH ----------
-            if cached:
-                logger.info("[RAG][CHAIN][START] seed=%r", current_text)
-            state = self._follow_rephrases_or_cached(
-                current_text, max_hops=self.REPHRASE_LIMIT, top_k=self.TOP_K_RET
-            )
+            # ---------- 2) CACHE FAST-PATH (reuse query_doc) ----------
+            # Check if the already-fetched doc has cached results — skip extra find_one
+            if query_doc and query_doc.get("results"):
+                # Extract results directly from the doc we already have (no extra MongoDB call)
+                raw_results = query_doc.get("results", []) or []
+                collection_key = self.cfg.get("collection_key")
+
+                # Project and filter (same logic as MongoManager.get_query_with_result but without find_one)
+                cached_results = []
+                seen_keys = set()
+                for r in raw_results:
+                    if not isinstance(r, dict):
+                        continue
+                    if collection_key and r.get("collection_key") != collection_key:
+                        continue
+                    kid = r.get("knowledge_id")
+                    dedup_key = (kid, r.get("collection_key")) if kid else r.get("title")
+                    if dedup_key and dedup_key in seen_keys:
+                        continue
+                    if dedup_key:
+                        seen_keys.add(dedup_key)
+                    out = {}
+                    if kid:
+                        out["knowledge_id"] = kid
+                    if r.get("collection_key"):
+                        out["collection_key"] = r["collection_key"]
+                    title = r.get("title") or r.get("text")
+                    if title:
+                        out["title"] = title
+                    if "cases" in r and isinstance(r["cases"], list):
+                        out["cases"] = r["cases"]
+                    if "score" in r and r["score"] is not None:
+                        out["score"] = float(r["score"])
+                    cached_results.append(out)
+
+                if self.TOP_K_RET and len(cached_results) > self.TOP_K_RET:
+                    cached_results = cached_results[:self.TOP_K_RET]
+
+                if cached_results:
+                    logger.info("[RAG][CACHE][FAST] hit from single-fetch doc for %r -> %d results", embed_text, len(cached_results))
+                    state = {
+                        "final_text": current_text,
+                        "chain": [],
+                        "hops": 0,
+                        "loop_detected": False,
+                        "hit_max_hops": False,
+                        "cached_results": cached_results,
+                    }
+                else:
+                    if cached:
+                        logger.info("[RAG][CHAIN][START] seed=%r", current_text)
+                    state = self._follow_rephrases_or_cached(
+                        current_text, max_hops=self.REPHRASE_LIMIT, top_k=self.TOP_K_RET
+                    )
+            else:
+                if cached:
+                    logger.info("[RAG][CHAIN][START] seed=%r", current_text)
+                state = self._follow_rephrases_or_cached(
+                    current_text, max_hops=self.REPHRASE_LIMIT, top_k=self.TOP_K_RET
+                )
 
             logger.info(
                 "[RAG][CHAIN][STATE] hops=%d loop=%s capped=%s final=%r chain=%r cached_results=%s",
@@ -190,7 +259,7 @@ class QueryProcessor:
                     state["final_text"],
                     len(state["cached_results"]),
                 )
-                
+
                 # Track query cache hit
                 # For Spanish queries, track on the original Spanish query document, not the translated English one
                 try:
@@ -207,65 +276,69 @@ class QueryProcessor:
                     logger.debug(f"[RAG][TRACK] Failed to track query cache hit: {e}")
 
                 cached_with_scores: List[Tuple[dict, float]] = []
-                for res in state["cached_results"]:
-                    enriched_doc = res
+
+                # OPTIMIZATION: batch-fetch all enrichment docs in a single $in query
+                # instead of N separate find_one calls (saves ~140ms per extra doc)
+                kid_to_index = {}  # knowledge_id -> list of indices in cached_results
+                title_to_index = {}  # title -> list of indices (fallback)
+                scores = []
+                for i, res in enumerate(state["cached_results"]):
                     score = 1.0
+                    if isinstance(res, dict) and "score" in res:
+                        try:
+                            score = float(res["score"])
+                        except Exception:
+                            score = 1.0
+                    scores.append(score)
 
                     if isinstance(res, dict):
-                        # Use stored score if present
-                        if "score" in res:
-                            try:
-                                score = float(res["score"])
-                            except Exception:
-                                score = 1.0
-
-                        # Prefer knowledge_id (pointer to MAIN collection)
                         kid = res.get("knowledge_id")
                         has_content = bool(res.get("text") or res.get("summary"))
-
                         if kid and not has_content:
-                            # Fetch from main by ObjectId
-                            try:
-                                full_doc = self.db.main.find_one(
-                                    {"_id": ObjectId(kid)},
-                                    {"text_embedding": 0, "summary_embedding": 0},
-                                )
-                                if full_doc:
-                                    enriched_doc = full_doc
-                                    logger.info(
-                                        "[RAG][CACHE][ENRICH] fetched full doc for kid=%s",
-                                        str(kid)[-6:],
-                                    )
-                            except Exception as e:
-                                logger.warning(
-                                    "[RAG][CACHE][ENRICH] failed to fetch kid=%s: %s",
-                                    kid,
-                                    e,
-                                )
+                            kid_to_index.setdefault(kid, []).append(i)
                         elif not kid and not has_content:
-                            # Fallback by title
                             title = res.get("title")
                             if title:
-                                try:
-                                    key = self.cfg.get("unique_index", "title")
-                                    full_doc = self.db.main.find_one(
-                                        {key: title},
-                                        {"text_embedding": 0, "summary_embedding": 0},
-                                    )
-                                    if full_doc:
-                                        enriched_doc = full_doc
-                                        logger.info(
-                                            "[RAG][CACHE][ENRICH] fetched full doc for title=%r",
-                                            title[:30],
-                                        )
-                                except Exception as e:
-                                    logger.warning(
-                                        "[RAG][CACHE][ENRICH] failed to fetch title=%r: %s",
-                                        title,
-                                        e,
-                                    )
+                                title_to_index.setdefault(title, []).append(i)
 
-                    cached_with_scores.append((enriched_doc, score))
+                # Batch fetch by knowledge_id (single query)
+                enriched_docs = [None] * len(state["cached_results"])
+                if kid_to_index:
+                    try:
+                        oids = [ObjectId(k) for k in kid_to_index]
+                        cursor = self.db.main.find(
+                            {"_id": {"$in": oids}},
+                            {"text_embedding": 0, "summary_embedding": 0, "embedding": 0},
+                        )
+                        for full_doc in cursor:
+                            kid_str = str(full_doc["_id"])
+                            for idx in kid_to_index.get(kid_str, []):
+                                enriched_docs[idx] = full_doc
+                        logger.info("[RAG][CACHE][ENRICH] batch-fetched %d docs by knowledge_id", len(oids))
+                    except Exception as e:
+                        logger.warning("[RAG][CACHE][ENRICH] batch fetch failed: %s", e)
+
+                # Batch fetch by title (fallback, single query)
+                if title_to_index:
+                    try:
+                        key = self.cfg.get("unique_index", "title")
+                        titles = list(title_to_index.keys())
+                        cursor = self.db.main.find(
+                            {key: {"$in": titles}},
+                            {"text_embedding": 0, "summary_embedding": 0, "embedding": 0},
+                        )
+                        for full_doc in cursor:
+                            doc_title = full_doc.get(key)
+                            for idx in title_to_index.get(doc_title, []):
+                                enriched_docs[idx] = full_doc
+                        logger.info("[RAG][CACHE][ENRICH] batch-fetched %d docs by title", len(titles))
+                    except Exception as e:
+                        logger.warning("[RAG][CACHE][ENRICH] batch title fetch failed: %s", e)
+
+                # Build final list
+                for i, res in enumerate(state["cached_results"]):
+                    doc = enriched_docs[i] if enriched_docs[i] is not None else res
+                    cached_with_scores.append((doc, scores[i]))
 
                 # IMPORTANT: do not trigger any AI insight generation here.
                 # Summaries / insights are already stored and will be reused
@@ -482,10 +555,10 @@ class QueryProcessor:
             CASES_LLM_VERIF = min(self.LLM_VERIF, 1.0)
             CASES_RAG_SEARCH = min(self.RAG_SEARCH, 1.0)
             CASES_LLM_SCORE = min(self.LLM_SCORE + 0.05, 1.0)  # Small boost for verified cases
-            
+
             # Initialize case-mapped results list to merge with MAIN results later
             case_mapped_results = []
-            
+
             # Try cases search with error handling - if it fails, continue to MAIN path
             # Skip cases search if skip_cases_search flag is set (e.g., for general questions)
             sem_cases = None
@@ -510,10 +583,10 @@ class QueryProcessor:
             if sem_cases and top_cases >= self.RAG_MIN:
                 logger.info(f"[RAG][CASES] Processing cases path: top_cases={top_cases:.4f} >= RAG_MIN={self.RAG_MIN:.4f}")
                 logger.info(f"[RAG][CASES] Thresholds: CASES_RAG_SEARCH={CASES_RAG_SEARCH:.4f}, CASES_LLM_VERIF={CASES_LLM_VERIF:.4f}")
-                
+
                 direct_cases = [(c, s) for (c, s) in sem_cases if s >= CASES_RAG_SEARCH]
                 verify_cases = [(c, s) for (c, s) in sem_cases if CASES_LLM_VERIF <= s < CASES_RAG_SEARCH]
-                
+
                 logger.info(f"[RAG][CASES] direct_cases: {len(direct_cases)} (score >= {CASES_RAG_SEARCH:.4f})")
                 logger.info(f"[RAG][CASES] verify_cases: {len(verify_cases)} ({CASES_LLM_VERIF:.4f} <= score < {CASES_RAG_SEARCH:.4f})")
 
@@ -530,15 +603,15 @@ class QueryProcessor:
 
                 accepted_cases = direct_cases + verified_cases
                 logger.info(f"[RAG][CASES] accepted_cases: {len(accepted_cases)} total (direct: {len(direct_cases)}, verified: {len(verified_cases)})")
-                
+
                 if accepted_cases:
                     logger.info(f"[RAG][CASES] Mapping {len(accepted_cases)} cases to main documents via references...")
                     mapped = self._cases_to_main_by_references(accepted_cases)
                     logger.info(f"[RAG][CASES] Mapped to {len(mapped)} main documents from case references")
-                    
+
                     if mapped:
-                        logger.info(f"[RAG][CASES] Mapped documents:\n%s", self._fmt_pairs(mapped[:5]))  # Show top 5
-                    
+                        logger.info("[RAG][CASES] Mapped documents:\n%s", self._fmt_pairs(mapped[:5]))  # Show top 5
+
                     accepted_main, verify_need_main = self._filter_kw_alias(
                         current_text=current_text,
                         sem_main=mapped,
@@ -546,7 +619,7 @@ class QueryProcessor:
                         emb=emb,
                     )
                     logger.info(f"[RAG][CASES] After filter_kw_alias: accepted={len(accepted_main)}, verify_need={len(verify_need_main)}")
-                    
+
                     decision = self._apply_main_abc_gates(
                         current_text=current_text,
                         accepted=accepted_main,
@@ -562,7 +635,7 @@ class QueryProcessor:
                     logger.info("[RAG][CASES] No accepted cases (direct or verified) - continuing to MAIN path")
             else:
                 if not sem_cases:
-                    logger.info(f"[RAG][CASES] No cases found")
+                    logger.info("[RAG][CASES] No cases found")
                 elif top_cases < self.RAG_MIN:
                     logger.info(f"[RAG][CASES] Top case score {top_cases:.4f} < RAG_MIN {self.RAG_MIN:.4f} - skipping cases path")
 
@@ -583,7 +656,7 @@ class QueryProcessor:
             except Exception as e:
                 logger.warning("[RAG][MAIN] Error during MAIN search: %s - will return case results if available", e)
                 sem_main = None
-            
+
             logger.info(
                 "[RAG][MAIN] thresholds MIN=%.3f SEARCH=%.3f LLM_VERIF=%.3f δ=%.3f ALIAS=%.3f GAP=%.2f LLM_SCORE=%.2f",
                 self.RAG_MIN, self.RAG_SEARCH, self.LLM_VERIF, current_decay, self.ALIAS_THR, self.FILTER_GAP, self.LLM_SCORE
@@ -596,7 +669,7 @@ class QueryProcessor:
                     title = doc.get("title", "N/A")
                     article = doc.get("article", "")
                     section = doc.get("section", "")
-                    logger.info("[RAG][MAIN][DETAIL] #%d: score=%.4f title=%r article=%r section=%r", 
+                    logger.info("[RAG][MAIN][DETAIL] #%d: score=%.4f title=%r article=%r section=%r",
                                i, score, title, article, section)
                 top_sem = sem_main[0][1] if sem_main else 0.0
             else:
@@ -605,7 +678,7 @@ class QueryProcessor:
 
             # Ensure sem_main is a list (not None) for _filter_kw_alias
             sem_main = sem_main or []
-            
+
             accepted_main, verify_need_main = self._filter_kw_alias(
                 current_text=current_text,
                 sem_main=sem_main,
@@ -619,11 +692,11 @@ class QueryProcessor:
                 need_verify=verify_need_main,
                         apply_gap=True
             )
-            
+
             # Merge case-mapped results with MAIN results
             combined_results = []
             seen_doc_ids = set()
-            
+
             # Add case-mapped results first (they have priority)
             if case_mapped_results:
                 for doc, score in case_mapped_results:
@@ -634,7 +707,7 @@ class QueryProcessor:
                             combined_results.append((doc, score))
                             seen_doc_ids.add(doc_id_str)
                 logger.info("[RAG][MERGE] Added %d case-mapped results", len(combined_results))
-            
+
             # Add MAIN results (avoid duplicates)
             if decision is not None:
                 main_count = 0
@@ -647,20 +720,20 @@ class QueryProcessor:
                             seen_doc_ids.add(doc_id_str)
                             main_count += 1
                 logger.info("[RAG][MERGE] Added %d MAIN results (deduplicated)", main_count)
-            
+
             # Sort combined results by score (descending)
             combined_results.sort(key=lambda x: x[1], reverse=True)
-            
+
             if combined_results:
                 # Validate all results meet threshold
                 invalid = [(d, s) for d, s in combined_results if s < self.RAG_SEARCH]
                 if invalid:
-                    logger.warning("[RAG][VALIDATE] Found %d results below RAG_SEARCH=%.3f, filtering out", 
+                    logger.warning("[RAG][VALIDATE] Found %d results below RAG_SEARCH=%.3f, filtering out",
                                   len(invalid), self.RAG_SEARCH)
                     combined_results = [(d, s) for d, s in combined_results if s >= self.RAG_SEARCH]
-                
-                logger.info("[RAG][PATH] Combined results: %d total (all >= %.3f) (case-mapped: %d, MAIN: %d)\n%s", 
-                           len(combined_results), self.RAG_SEARCH, len(case_mapped_results), 
+
+                logger.info("[RAG][PATH] Combined results: %d total (all >= %.3f) (case-mapped: %d, MAIN: %d)\n%s",
+                           len(combined_results), self.RAG_SEARCH, len(case_mapped_results),
                            len(decision) if decision else 0,
                            self._fmt_pairs(combined_results[:5]))
                 return (combined_results[: self.TOP_K_RET], current_text)
@@ -669,21 +742,21 @@ class QueryProcessor:
                 # Validate all results meet threshold
                 invalid = [(d, s) for d, s in case_mapped_results if s < self.RAG_SEARCH]
                 if invalid:
-                    logger.warning("[RAG][VALIDATE] Found %d case-mapped results below RAG_SEARCH=%.3f, filtering out", 
+                    logger.warning("[RAG][VALIDATE] Found %d case-mapped results below RAG_SEARCH=%.3f, filtering out",
                                   len(invalid), self.RAG_SEARCH)
                     case_mapped_results = [(d, s) for d, s in case_mapped_results if s >= self.RAG_SEARCH]
-                
-                logger.info("[RAG][PATH] Returning case-mapped results only (all >= %.3f) (MAIN search had no results)\n%s", 
+
+                logger.info("[RAG][PATH] Returning case-mapped results only (all >= %.3f) (MAIN search had no results)\n%s",
                            self.RAG_SEARCH, self._fmt_pairs(case_mapped_results[:5]))
                 return (case_mapped_results[: self.TOP_K_RET], current_text)
             elif decision is not None:
                 # Validate all results meet threshold
                 invalid = [(d, s) for d, s in decision if s < self.RAG_SEARCH]
                 if invalid:
-                    logger.warning("[RAG][VALIDATE] Found %d MAIN results below RAG_SEARCH=%.3f, filtering out", 
+                    logger.warning("[RAG][VALIDATE] Found %d MAIN results below RAG_SEARCH=%.3f, filtering out",
                                   len(invalid), self.RAG_SEARCH)
                     decision = [(d, s) for d, s in decision if s >= self.RAG_SEARCH]
-                
+
                 logger.info("[RAG][PATH] winner=MAIN (all >= %.3f)\n%s", self.RAG_SEARCH, self._fmt_pairs(decision))
                 return (decision[: self.TOP_K_RET], current_text)
 
@@ -723,7 +796,7 @@ class QueryProcessor:
         resolves *only those matched titles* back to docs for the return list.
 
         Returns: List[(doc_without_embedding, score_float)]
-        
+
         NOTE: Initialization and ingestion must be done BEFORE calling this function.
         """
         if not filtered_cases:
@@ -738,14 +811,14 @@ class QueryProcessor:
         cached_titles_set = set()
         cases_to_search = []
         current_case_ids = []
-        
+
         # Extract ObjectIds and titles from filtered_cases
         def _norm_title(s: str) -> str:
             return " ".join((s or "").split()).lower()
-        
+
         case_id_to_title = {}  # Map ObjectId -> title for quick lookup
         title_to_case = {}     # Map normalized title -> full case dict
-        
+
         for fc in filtered_cases:
             if isinstance(fc, dict):
                 case_id = str(fc.get("_id", ""))
@@ -757,35 +830,35 @@ class QueryProcessor:
             else:
                 # String title only - no ObjectId available
                 title_to_case[_norm_title(str(fc))] = {"title": str(fc)}
-        
+
         logger.info("[LIGHT][RANGE] Current search range: %d cases with ObjectIds", len(current_case_ids))
-        
+
         try:
             # Find similar query in cache (semantic search on query)
             cached_query_doc = self.qm.find_cached_similar_query(self.db, query, self.db.query)
-            
+
             if cached_query_doc:
                 logger.info("[LIGHT][CACHE] Found similar cached query (semantic match)")
-                
+
                 # Get cached search range (ObjectIds)
                 cached_case_ids = self.qm.get_cached_search_range(cached_query_doc)
-                
+
                 if cached_case_ids and current_case_ids:
                     # Identify new, removed, and existing cases
                     new_ids, removed_ids, existing_ids = self.qm.identify_new_cases(
-                        current_case_ids, 
+                        current_case_ids,
                         cached_case_ids
                     )
-                    
+
                     # Get cached results for existing cases (that are still visible)
                     cached_case_titles = self.qm.get_cached_case_titles(cached_query_doc)
                     cached_docs = self.db.get_cases_by_titles(cached_case_titles) or []
-                    
+
                     for doc in cached_docs:
                         doc_id = str(doc.get("_id", ""))
                         doc_title = doc.get("title", "")
                         doc_title_norm = _norm_title(doc_title)
-                        
+
                         # Check if this cached case still exists in current range
                         if doc_id in existing_ids or doc_title_norm in title_to_case:
                             view = dict(doc)
@@ -797,38 +870,38 @@ class QueryProcessor:
                                 if isinstance(result, dict) and result.get("title") == doc_title:
                                     cached_score = result.get("score", 0.95)
                                     break
-                            
+
                             cached_visible_results.append((view, cached_score))
                             cached_titles_set.add(doc_title_norm)
                             logger.info("[LIGHT][CACHE] ✓ Reusing cached result: %r (score: %.3f)", doc_title, cached_score)
-                    
+
                     # Build cases_to_search: only NEW cases (NOT in existing_ids)
                     existing_ids_set = set(existing_ids)  # For fast lookup
-                    
+
                     for case_id in new_ids:
                         # Double-check: ensure this case is NOT in existing_ids
                         if case_id in existing_ids_set:
                             logger.warning("[LIGHT][INCREMENTAL] Skipping case %s (already in existing_ids)", case_id)
                             continue
-                        
+
                         title = case_id_to_title.get(case_id)
                         if title:
                             title_norm = _norm_title(title)
                             case_dict = title_to_case.get(title_norm)
                             if case_dict:
                                 cases_to_search.append(case_dict)
-                    
+
                     logger.info("[LIGHT][INCREMENTAL] Cached: %d, New to search: %d, Removed: %d, Existing (skipped): %d",
                                len(cached_visible_results), len(cases_to_search), len(removed_ids), len(existing_ids))
-                    
+
                     if removed_ids:
                         logger.info("[LIGHT][INCREMENTAL] %d cases were archived/removed since last search", len(removed_ids))
-                    
+
                     # CRITICAL: If no new cases to search, return immediately
                     # Don't re-search cases already in the cached range
                     if not cases_to_search:
                         if cached_visible_results:
-                            logger.info("[LIGHT][INCREMENTAL] ✓ No new cases, returning %d cached results", 
+                            logger.info("[LIGHT][INCREMENTAL] ✓ No new cases, returning %d cached results",
                                        len(cached_visible_results))
                             return cached_visible_results[:self.TOP_K_RET]
                         else:
@@ -842,7 +915,7 @@ class QueryProcessor:
                 # No cached query found - search all cases
                 logger.info("[LIGHT] No similar cached query found, searching all cases")
                 cases_to_search = filtered_cases
-                
+
         except Exception as e:
             logger.exception("[LIGHT][CACHE] Failed to retrieve cached results: %s", e)
             # Fallback: search all cases
@@ -880,11 +953,11 @@ class QueryProcessor:
 
         # 5) Search logic has been moved up to section 2 (incremental search)
         # cases_to_search is now populated based on cache range comparison
-        
-        logger.info("[LIGHT] Searching %d cases (cached: %d, incremental: %s)", 
-                   len(cases_to_search), len(cached_visible_results), 
+
+        logger.info("[LIGHT] Searching %d cases (cached: %d, incremental: %s)",
+                   len(cases_to_search), len(cached_visible_results),
                    "yes" if current_case_ids else "no")
-        
+
         # If no cases to search and we have cached results, return them
         if not cases_to_search:
             if cached_visible_results:
@@ -892,7 +965,7 @@ class QueryProcessor:
                 return cached_visible_results[:self.TOP_K_RET]
             logger.info("[LIGHT] No cases to search -> []")
             return []
-        
+
         #    This uses the function you supplied and returns e.g. [ ({"CASE-2025-0006": 0.812},), ... ]
         raw_sims: List[tuple[Dict[str, float]]] = self.qm.search_similar(
             db=self.db,
@@ -943,15 +1016,15 @@ class QueryProcessor:
             if d is not None:
                 view = dict(d)
                 view.pop("embedding", None)  # don't leak embeddings
-                
+
                 # Get semantic score only (no BM25/Atlas search)
                 sem_score = matched_scores.get(t, 1.0)
-                
+
                 logger.debug(
                     "[LIGHT][SEMANTIC] doc=%r sem=%.4f (using semantic-only with ABC gate)",
                     t, sem_score
                 )
-                
+
                 sims.append((view, sem_score))
             else:
                 logger.info("[LIGHT] matched title not found in docs: %r", t)
@@ -977,11 +1050,11 @@ class QueryProcessor:
         )
 
         new_ranked = [p for p in (decision or []) if p[1] >= self.RAG_SEARCH]
-        
+
         # 11) Merge cached results with new results
         # Cached results come first (they were high-confidence originally)
         all_results = cached_visible_results + new_ranked
-        
+
         # Deduplicate by title (keep first occurrence)
         seen_titles = set()
         deduplicated = []
@@ -990,49 +1063,49 @@ class QueryProcessor:
             if doc_title_norm not in seen_titles:
                 seen_titles.add(doc_title_norm)
                 deduplicated.append((doc, score))
-        
+
         # Apply gap filter to final merged results to remove results with gap > FILTER_GAP from top
         if hasattr(self, 'FILTER_GAP') and deduplicated:
             before_gap = len(deduplicated)
             deduplicated = self._gap_filter(deduplicated)
-            logger.info("[LIGHT][GAP] Applied gap filter to merged results: kept=%d dropped=%d (FILTER_GAP=%.3f)", 
+            logger.info("[LIGHT][GAP] Applied gap filter to merged results: kept=%d dropped=%d (FILTER_GAP=%.3f)",
                        len(deduplicated), before_gap - len(deduplicated), self.FILTER_GAP)
-        
+
         # Final threshold enforcement - ensure ALL results >= RAG_SEARCH
         before_threshold = len(deduplicated)
         deduplicated = [(d, s) for (d, s) in deduplicated if s >= self.RAG_SEARCH]
         if before_threshold != len(deduplicated):
-            logger.warning("[LIGHT][THRESHOLD] Filtered %d results below RAG_SEARCH=%.3f (kept %d)", 
+            logger.warning("[LIGHT][THRESHOLD] Filtered %d results below RAG_SEARCH=%.3f (kept %d)",
                           before_threshold - len(deduplicated), self.RAG_SEARCH, len(deduplicated))
         else:
             logger.info("[LIGHT][THRESHOLD] All %d results meet RAG_SEARCH=%.3f", len(deduplicated), self.RAG_SEARCH)
-        
+
         # Apply TOP_K limit
         final_ranked = deduplicated[:self.TOP_K_RET]
-        
+
         # 12) Store ALL results >= RAG_SEARCH threshold + search range for future caching
         # This includes both direct accepts AND LLM-verified results that got bumped up
         cacheable_results = [(d, s) for (d, s) in new_ranked if s >= self.RAG_SEARCH]
         confident_threshold = float(self.thr.get('confident', 0.90))  # Get from thresholds dict
-        
+
         if cacheable_results or current_case_ids:
             try:
                 # Store ALL results >= RAG_SEARCH, not just high-confidence ones
                 # This allows better cache reuse for similar queries
                 self.qm.store_case_query_pairs(
-                    self.db, 
-                    query, 
+                    self.db,
+                    query,
                     cacheable_results,  # Store all results >= RAG_SEARCH
                     searched_case_ids=current_case_ids if current_case_ids else None,
                     min_score=self.RAG_SEARCH  # Use RAG_SEARCH threshold, not confident
                 )
                 high_conf_count = len([s for (_, s) in cacheable_results if s >= confident_threshold])
                 logger.info("[LIGHT][STORE] Cached %d results (including %d high-confidence >= %.2f) + search range (%d case IDs)",
-                           len(cacheable_results), high_conf_count, confident_threshold, 
+                           len(cacheable_results), high_conf_count, confident_threshold,
                            len(current_case_ids) if current_case_ids else 0)
             except Exception as e:
                 logger.exception("[LIGHT][STORE] Failed to cache results: %s", e)
-        
+
         logger.info(
             "[LIGHT][RET] cached=%d new_accepted=%d new_verify=%d -> final=%d (min>=%.3f, top_k=%d)",
             len(cached_visible_results), len(accepted), len(need_verify), len(final_ranked), self.RAG_SEARCH, self.TOP_K_RET
@@ -1057,9 +1130,13 @@ class QueryProcessor:
         while True:
             norm_final = self.db.normalize_query(final)
 
-            # cache hit?
-            if self.qm.check_query_has_results(self.db, norm_final):
-                # Get collection_key from config to filter cached results by collection
+            # OPTIMIZATION: single find_query_doc_ci call instead of 3 separate reads
+            # Previously: check_query_has_results (find_one) + get_query_with_results (find_one) + check_has_update_reference (find_one)
+            # Now: one find_one, inspect the doc for results and rephrase_ref
+            doc = self.db.find_query_doc_ci(norm_final)
+
+            # cache hit? — check results from the already-fetched doc
+            if doc and doc.get("results"):
                 collection_key = self.cfg.get("collection_key")
                 cached_results = self.qm.get_query_with_results(self.db, norm_final, limit=top_k, collection_key=collection_key)
                 if cached_results:
@@ -1073,11 +1150,14 @@ class QueryProcessor:
                         "cached_results": cached_results,
                     }
 
-            # follow rephrase edges using the same normalized key
-            if not self.qm.check_query_has_update_reference(self.db, norm_final):
+            # follow rephrase edges — check from same doc (no extra query)
+            if not doc or not doc.get("rephrased_ref"):
                 break
 
-            nxt = self.qm.get_query_with_rephrase(self.db, norm_final)
+            # Resolve the rephrase target by ObjectId
+            target_id = doc.get("rephrased_ref")
+            tgt = self.db.find_query_doc_by_id(target_id) if target_id else None
+            nxt = (tgt or {}).get("query") if tgt else None
             if not nxt:
                 break
 
@@ -1283,12 +1363,12 @@ class QueryProcessor:
         def _normalize_identifier(text: str) -> str:
             """Normalize identifier for comparison (lowercase, strip whitespace)"""
             return " ".join((text or "").split()).lower()
-        
+
         # Extract and normalize document identifiers from current doc
         doc_title = _normalize_identifier(doc.get("title") if doc else None)
         doc_article = _normalize_identifier(doc.get("article") if doc else None)
         doc_section = _normalize_identifier(doc.get("section") if doc else None)
-        
+
         def _doc_identifiers_match(cached_doc_identifiers: Dict[str, str]) -> bool:
             """
             Compare document identifiers to verify document match.
@@ -1296,11 +1376,11 @@ class QueryProcessor:
             """
             if not cached_doc_identifiers:
                 return False
-            
+
             cached_title = _normalize_identifier(cached_doc_identifiers.get("title"))
             cached_article = _normalize_identifier(cached_doc_identifiers.get("article"))
             cached_section = _normalize_identifier(cached_doc_identifiers.get("section"))
-            
+
             # If we have identifiers in current doc, they must all match
             matches = []
             if doc_title:
@@ -1309,16 +1389,16 @@ class QueryProcessor:
                 matches.append(cached_article == doc_article)
             if doc_section:
                 matches.append(cached_section == doc_section)
-            
+
             # If we have no identifiers in current doc, cannot verify match
             if not matches:
                 return False
-            
+
             # All available identifiers must match
             return all(matches)
-        
+
         # ---- 1) CACHE CHECK: Check exact query AND semantically similar queries ----
-        # Policy: 
+        # Policy:
         # - Check if query (exact or similar) has results AND insights
         # - If insights exist for this specific document (matching knowledge_id or identifiers), REUSE them
         # - If results exist but insights don't exist for this document, GENERATE them
@@ -1326,7 +1406,7 @@ class QueryProcessor:
         # Always use English query for cache lookup and semantic search
         # Use pre-translated query if provided to avoid redundant API calls
         from services.rag.rag_dependencies.ai_service import translate_query
-        
+
         # For cache lookup, always use English query
         query_for_cache = query_en if query_en else query
         if language == "es" and not query_en:
@@ -1337,10 +1417,10 @@ class QueryProcessor:
                 logger.info(f"[INSIGHTIDX][CACHE] Translated query for cache lookup: {translated[:50]}...")
         elif query_en:
             logger.info(f"[INSIGHTIDX][CACHE] Using pre-translated English query for cache lookup: {query_en[:50]}...")
-        
+
         norm_query = self.db.normalize_query(query_for_cache or "")
         queries_to_check = [norm_query]  # Start with exact query
-        
+
         logger.info(
             "[INSIGHTIDX][CACHE][START] query=%r (cache=%r) norm_query=%r index=%d kid=%s lang=%s doc_title=%r",
             query[:100] if query else "",
@@ -1351,7 +1431,7 @@ class QueryProcessor:
             language,
             doc_title[:50] if doc_title else "None"
         )
-        
+
         # Fix 4: Check request-level insight cache first (before any API calls)
         cache_key = (norm_query, str(kid) if kid else None, language)
         if cache_key in self._request_insight_cache:
@@ -1362,7 +1442,7 @@ class QueryProcessor:
                 language
             )
             return self._request_insight_cache[cache_key]
-        
+
         # Add semantically similar queries using query embedding search
         try:
             # Fix 1: Check if we already have embedding from main query processing
@@ -1375,7 +1455,7 @@ class QueryProcessor:
                 query_emb, _ = self.qm.get_or_create_query_embedding(query_for_cache, self.db, previous_rephrases=[])
                 # Cache it for this request to avoid redundant calls
                 self._cached_query_embedding = query_emb
-            
+
             if query_emb is not None:
                 # Find semantically similar queries
                 similar_query_doc = self.qm.find_cached_similar_query(self.db, query_for_cache, self.db.query)
@@ -1398,27 +1478,27 @@ class QueryProcessor:
                         )
         except Exception as e:
             logger.debug("[INSIGHTIDX][CACHE][SEMANTIC] Semantic query matching failed: %s", e)
-        
+
         # Track why cached insights were skipped (for better error messages)
         skipped_reasons = {
             "no_text": 0,
             "wrong_language": 0,
             "index_mismatch": 0
         }
-        
+
         # Check each query (exact + semantically similar) for cached insights
         for check_query in queries_to_check:
             # Determine if this is the exact query or a semantically similar one
             is_exact_query = (check_query == norm_query)
-            
+
             try:
                 rows = self.qm.get_query_with_insights(
                     self.db, check_query, limit=200, language=language
                 ) or []
-                
+
                 if not rows:
                     continue
-                    
+
                 logger.info(
                     "[INSIGHTIDX][CACHE] rows=%d lang=%s for query=%r (exact=%s) - matching by index=%d only",
                     len(rows),
@@ -1427,14 +1507,14 @@ class QueryProcessor:
                     is_exact_query,
                     index
                 )
-                
+
                 # Match insights by index only (not knowledge_id)
                 # Insights are aligned with results array by index position
                 for r in rows:
                     # Match by index only
                     if int(r.get("index", -1)) != int(index):
                         continue  # Check next row
-                    
+
                     # Get text with language preference
                     txt = None
                     if language == "es":
@@ -1455,11 +1535,11 @@ class QueryProcessor:
                             txt = (r.get("text") or r.get("summary") or "").strip()
                     else:
                         txt = (r.get("text") or r.get("summary") or "").strip()
-                    
+
                     if not txt:
                         skipped_reasons["no_text"] += 1
                         continue  # Check next row
-                    
+
                     # Found matching cached insight - return it immediately
                     logger.info(
                         "[INSIGHTIDX][CACHE] HIT index=%d kid=%s lang=%s (query=%r, %s)",
@@ -1483,7 +1563,7 @@ class QueryProcessor:
 
         # If we reach here, there is NO cached insight for this exact (norm_query, index, knowledge_id) combination.
         # We do NOT search across other queries - insights are only reused for the SAME QUERY (SAME OBJECT).
-        
+
         if not doc:
             logger.warning("[INSIGHTIDX] no doc to summarize at index=%d", index)
             return ""
@@ -1529,11 +1609,11 @@ class QueryProcessor:
                     "[INSIGHTIDX][OPENAI][WARNING] Results exist for query=%r but no insights found in cache. This may indicate a cache inconsistency.",
                     norm_query
                 )
-        
+
         # Note: We should generate insights if they don't exist, even if query was recently processed.
         # The cache check above already handles reusing existing insights correctly.
         # Only generate if no matching cached insight was found (which is the case if we reached here).
-        
+
         logger.warning(
             "[INSIGHTIDX][OPENAI] No cached insight found after ALL checks - generating new insight for query=%r index=%d kid=%s lang=%s",
             query[:100] if query else "",
@@ -1541,13 +1621,13 @@ class QueryProcessor:
             str(kid)[-6:] if kid else None,
             language
         )
-        
+
         # Generate insights based on language
         # If language is "es", generate both English and Spanish in parallel
         # If language is "en", only generate English
         insight_en = ""
         insight_es = None
-        
+
         def generate_english_insight():
             """Generate English insight"""
             try:
@@ -1587,7 +1667,7 @@ class QueryProcessor:
             except Exception as e:
                 logger.exception("[INSIGHTIDX] LLM insight_explain (English) failed: %s", e)
                 return ""
-        
+
         def generate_spanish_insight():
             """Generate Spanish insight"""
             try:
@@ -1622,7 +1702,7 @@ class QueryProcessor:
             except Exception as e:
                 logger.exception("[INSIGHTIDX] LLM insight_explain (Spanish) failed: %s", e)
                 return ""
-        
+
         # Generate insights
         if language == "es":
             # Generate both English and Spanish insights in parallel
@@ -1630,24 +1710,24 @@ class QueryProcessor:
             with ThreadPoolExecutor(max_workers=2) as executor:
                 future_en = executor.submit(generate_english_insight)
                 future_es = executor.submit(generate_spanish_insight)
-                
+
                 insight_en = (future_en.result() or "").strip()
                 insight_es = (future_es.result() or "").strip()
-                
-                logger.info("[INSIGHTIDX][PARALLEL] English insight len=%d, Spanish insight len=%d", 
+
+                logger.info("[INSIGHTIDX][PARALLEL] English insight len=%d, Spanish insight len=%d",
                            len(insight_en), len(insight_es) if insight_es else 0)
         else:
             # Only generate English insight
             logger.info("[INSIGHTIDX] Generating English insight only")
             insight_en = generate_english_insight()
             insight_en = (insight_en or "").strip()
-        
+
         # Use appropriate insight based on language for return value
         insight = insight_es if (language == "es" and insight_es) else insight_en
-        
-        logger.info("[INSIGHTIDX][LLM] English len=%d, Spanish len=%d, returning len=%d", 
+
+        logger.info("[INSIGHTIDX][LLM] English len=%d, Spanish len=%d, returning len=%d",
                    len(insight_en), len(insight_es) if insight_es else 0, len(insight))
-        
+
         if not insight_en:
             logger.warning("[INSIGHTIDX] No English insight generated, returning empty")
             return ""
@@ -1658,7 +1738,7 @@ class QueryProcessor:
             if not self.debug_mode:
                 # Save under the exact normalized query only
                 save_query = norm_query
-                
+
                 if save_query:
                     # Store both English and Spanish insights when available
                     # Insights are stored by index only (aligned with results array)
@@ -1734,7 +1814,7 @@ class QueryProcessor:
             # Use self.cfg (set in __init__) instead of self.config
             unique_key = self.cfg.get("unique_index", "title")
             coll_name = self.cfg.get("cases_collection_name") or self.cfg.get("main_collection_name")
-            
+
             # Access database through MongoManager: self.db is MongoManager, self.db.db is the MongoDB database
             database = getattr(self.db, "db", None) if self.db else None
 
@@ -1861,13 +1941,13 @@ class QueryProcessor:
             if not refs:
                 logger.warning(f"[RAG][CASES][MAP] Case '{case_name}' has no references field or empty references")
                 continue
-            
+
             for raw in refs:
                 ref = (raw or "").strip()
                 if not ref:
                     continue
                 total_refs += 1
-                
+
                 # Try to normalize the reference (use static method if alias is available)
                 if self.alias is not None:
                     normalized = self.alias.normalize_amendment_title(ref)
@@ -1883,7 +1963,7 @@ class QueryProcessor:
                     # Alias not available, use raw reference
                     t = ref
                     logger.debug(f"[RAG][CASES][MAP] Reference: '{raw}' -> using raw (alias search disabled)")
-                
+
                 title_refs.add(t)
                 add_source(t, cdoc, float(sc))
 
@@ -1897,20 +1977,20 @@ class QueryProcessor:
 
         aggregated: Dict[Any, Dict[str, Any]] = {}
         main_docs_found = 0
-        
+
         # Convert title_refs to list for MongoDB query
         title_refs_list = list(title_refs)
-        
+
         # Try exact match first
         for mdoc in self.db.main.find({self.unique_index: {"$in": title_refs_list}}):
             main_docs_found += 1
             mid = mdoc["_id"]
             mtitle = mdoc.get(self.unique_index)
-            
+
             if not mtitle:
                 logger.warning(f"[RAG][CASES][MAP] Main document {mid} has no {self.unique_index} field")
                 continue
-            
+
             # Check if this title matches any of our references (exact or normalized)
             matched_refs = []
             for ref_title in title_refs_list:
@@ -1921,14 +2001,14 @@ class QueryProcessor:
                 elif mtitle.lower() == ref_title.lower():
                     matched_refs.append(ref_title)
                     logger.debug(f"[RAG][CASES][MAP] Case-insensitive match: '{mtitle}' == '{ref_title}'")
-            
+
             if not matched_refs:
                 continue
-            
+
             entry = aggregated.setdefault(
                 mid, {"doc": {**mdoc, "cases": []}, "score": 0.0, "case_ids": set()}
             )
-            
+
             # Add cases from all matched references
             for matched_ref in matched_refs:
                 for cdoc, sc in ref_sources.get(matched_ref, []):
@@ -1947,15 +2027,15 @@ class QueryProcessor:
 
         logger.info(f"[RAG][CASES][MAP] Found {main_docs_found} main documents matching {len(title_refs)} unique references")
         logger.info(f"[RAG][CASES][MAP] Aggregated {len(aggregated)} unique main documents with case mappings")
-        
+
         out: List[Tuple[dict, float]] = [(v["doc"], min(v["score"], 1.0)) for v in aggregated.values()]
         out.sort(key=lambda x: x[1], reverse=True)
-        
+
         if out:
             logger.info(f"[RAG][CASES][MAP] Returning {len(out)} mapped main documents (top score: {out[0][1]:.4f})")
         else:
             logger.warning("[RAG][CASES][MAP] No main documents found matching case references")
-        
+
         return out
 
     def _filter_kw_alias(
@@ -1972,7 +2052,7 @@ class QueryProcessor:
         text_terms = []
         alias_pairs = []
         cleaned = current_text  # Default to original text if alias is not available
-        
+
         if self.alias is not None:
             # Ensure alias cache
             if not getattr(self.alias, "alias_cache", None):
@@ -1988,10 +2068,10 @@ class QueryProcessor:
                         logger.warning("[ALIAS] cache load failed: %s", e)
                 else:
                     logger.warning("[ALIAS] no cache loader found; alias search may be empty")
-            
+
             # Clean query using alias manager
             cleaned = self.alias.clean_query(current_text)
-            
+
             # KeywordMatcher is only available for US Constitution
             if self.kw is not None:
                 text_terms = self.kw.find_textual(current_text) or []
@@ -2002,7 +2082,7 @@ class QueryProcessor:
             else:
                 # If no keyword matcher, still use alias for query cleaning
                 pass
-            
+
             # Try to pass the precomputed embedding
             try:
                 alias_hits = self.alias.find_semantic_aliases(cleaned, embedding=emb) or []
@@ -2021,7 +2101,7 @@ class QueryProcessor:
                 logger.info("[RAG][ALIAS][DETAIL] All alias matches >= threshold (%.2f):", self.ALIAS_THR)
                 for alias_text, canonical, score in alias_hits:
                     if float(score) >= self.ALIAS_THR:
-                        logger.info("[RAG][ALIAS][DETAIL]   alias=%r -> canonical=%r score=%.4f", 
+                        logger.info("[RAG][ALIAS][DETAIL]   alias=%r -> canonical=%r score=%.4f",
                                    alias_text, canonical, float(score))
             else:
                 logger.info("[RAG][ALIAS] no hits")
@@ -2044,7 +2124,7 @@ class QueryProcessor:
 
         # Use only semantic search results (no BM25/Atlas search)
         working: List[Tuple[dict, float]] = []  # (doc, sem_score)
-        
+
         # Add all semantic search documents
         for doc_id, sem_score in sem_scores.items():
             doc = sem_docs[doc_id]
@@ -2081,7 +2161,7 @@ class QueryProcessor:
 
             # Use semantic score only (no BM25/hybrid search)
             sem_score_float = float(sem_score)
-            
+
             # FIX: Preserve semantic scores instead of replacing with KEYWORD_MATCH_SCORE
             # Only boost with KEYWORD_MATCH_SCORE when semantic score is low but keyword match exists
             # This prevents all documents from getting the same score (0.8)
@@ -2099,15 +2179,15 @@ class QueryProcessor:
             # Log detailed score breakdown for debugging
             # Log when: DEBUG mode, low semantic score, or when match is found
             should_log_detail = (
-                logger.isEnabledFor(logging.DEBUG) or 
-                sem_score_float < 0.65 or 
+                logger.isEnabledFor(logging.DEBUG) or
+                sem_score_float < 0.65 or
                 has_keyword_match or
                 sem_score_float >= self.ALIAS_THR
             )
             if should_log_detail:
                 logger.info(
                     "[RAG][ABC_GATE][SCORE] doc=%r sem=%.4f has_keyword_match=%s bias=%.4f total=%.4f "
-                    "(RAG_SEARCH=%.3f LLM_VERIF=%.3f ALIAS_THR=%.3f KEYWORD_MATCH_SCORE=%.2f)", 
+                    "(RAG_SEARCH=%.3f LLM_VERIF=%.3f ALIAS_THR=%.3f KEYWORD_MATCH_SCORE=%.2f)",
                     title, sem_score_float, has_keyword_match, bias, total,
                     self.RAG_SEARCH, self.LLM_VERIF, self.ALIAS_THR, KEYWORD_MATCH_SCORE
                 )
@@ -2119,16 +2199,16 @@ class QueryProcessor:
             # Use original sem_score_float (not capped) for threshold checks to allow high semantic scores to pass
             if total >= (self.RAG_SEARCH - current_decay) and sem_score_float >= self.RAG_MIN:
                 accepted_dict[doc["_id"]] = (doc, min(total, 1.0))
-                logger.debug("[RAG][ACCEPT] doc=%r total=%.4f >= RAG_SEARCH=%.3f sem=%.4f >= RAG_MIN=%.3f", 
+                logger.debug("[RAG][ACCEPT] doc=%r total=%.4f >= RAG_SEARCH=%.3f sem=%.4f >= RAG_MIN=%.3f",
                            title, total, self.RAG_SEARCH - current_decay, sem_score_float, self.RAG_MIN)
             elif total >= (self.RAG_SEARCH - current_decay) and sem_score_float < self.RAG_MIN:
                 # Total score passes but semantic score is too low - reject or send to verification
-                logger.info("[RAG][REJECT_SEMANTIC_FLOOR] doc=%r total=%.4f >= RAG_SEARCH=%.3f but sem=%.4f < RAG_MIN=%.3f - rejecting", 
+                logger.info("[RAG][REJECT_SEMANTIC_FLOOR] doc=%r total=%.4f >= RAG_SEARCH=%.3f but sem=%.4f < RAG_MIN=%.3f - rejecting",
                            title, total, self.RAG_SEARCH - current_decay, sem_score_float, self.RAG_MIN)
                 # Optionally send to verification if it's close to the floor
                 if sem_score_float >= (self.RAG_MIN - 0.10) and total >= (self.LLM_VERIF - current_decay):
                     verify_pool.append((doc, total))
-                    logger.debug("[RAG][VERIFY_SEMANTIC_FLOOR] doc=%r sent to verification (sem=%.4f close to RAG_MIN=%.3f)", 
+                    logger.debug("[RAG][VERIFY_SEMANTIC_FLOOR] doc=%r sent to verification (sem=%.4f close to RAG_MIN=%.3f)",
                                title, sem_score_float, self.RAG_MIN)
             elif total >= (self.LLM_VERIF - current_decay):
                 verify_pool.append((doc, total))
@@ -2216,23 +2296,23 @@ class QueryProcessor:
 
         verified_kept: List[Tuple[dict, float]] = []
         if verify_candidates:
-            logger.info("[RAG][LLM_VERIFY] Verifying %d candidates (scores: %s)", 
-                       len(verify_candidates), 
+            logger.info("[RAG][LLM_VERIFY] Verifying %d candidates (scores: %s)",
+                       len(verify_candidates),
                        [f"{s:.3f}" for _, s in verify_candidates[:10]])
             item_type = "doc" if self.sql else "case"
             try:
                 # Use parallel verification for faster processing
                 vm = self.llmv.verify_many_parallel(current_text, verify_candidates, item_type=item_type, max_workers=5) or []
                 verified_kept = [(d, s) for (d, s) in vm if s >= self.RAG_SEARCH]
-                logger.info("[RAG][LLM_VERIFY] Verified %d/%d candidates passed (>=%.3f)", 
+                logger.info("[RAG][LLM_VERIFY] Verified %d/%d candidates passed (>=%.3f)",
                            len(verified_kept), len(verify_candidates), self.RAG_SEARCH)
                 # Log verification results
                 for doc, score in verified_kept[:10]:
-                    logger.info("[RAG][LLM_VERIFY][DETAIL] PASSED: title=%r score=%.4f", 
+                    logger.info("[RAG][LLM_VERIFY][DETAIL] PASSED: title=%r score=%.4f",
                                doc.get("title", "N/A"), score)
                 for doc, score in vm:
                     if score < self.RAG_SEARCH:
-                        logger.info("[RAG][LLM_VERIFY][DETAIL] FAILED: title=%r score=%.4f < %.3f", 
+                        logger.info("[RAG][LLM_VERIFY][DETAIL] FAILED: title=%r score=%.4f < %.3f",
                                    doc.get("title", "N/A"), score, self.RAG_SEARCH)
             except Exception as e:
                 logger.info("[RAG][MAIN] verify_many_parallel failed: %s", e)
@@ -2262,7 +2342,7 @@ class QueryProcessor:
         before_threshold = len(merged)
         merged = [(d, s) for (d, s) in merged if s >= self.RAG_SEARCH]
         if before_threshold != len(merged):
-            logger.warning("[GATES][THRESHOLD] Filtered %d results below RAG_SEARCH=%.3f (kept %d)", 
+            logger.warning("[GATES][THRESHOLD] Filtered %d results below RAG_SEARCH=%.3f (kept %d)",
                           before_threshold - len(merged), self.RAG_SEARCH, len(merged))
         else:
             logger.info("[GATES][THRESHOLD] All %d results meet RAG_SEARCH=%.3f", len(merged), self.RAG_SEARCH)
