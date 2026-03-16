@@ -34,17 +34,17 @@ mongo_cost = np.array([0.00008] * len(volumes))
 # Higher due to LLM verification calls on ~25% of queries
 arf_no_mlp_cost = np.array([0.0040, 0.0040, 0.0035, 0.0030, 0.0020, 0.0008, 0.0004])
 
-# Latency per query (ms) — ARF with MLP
-# Cold: ~714ms, cached: ~500ms
-arf_latency = np.array([714, 714, 680, 650, 580, 520, 505])
+# Latency per query (ms) — ARF with MLP + in-memory cache
+# Cold: ~714ms, cached: ~335ms (in-memory cache eliminates MongoDB round-trips)
+arf_latency = np.array([714, 714, 600, 500, 420, 360, 340])
 
 # Latency per query (ms) — MongoDB Atlas
-# Constant ~408ms (no pipeline overhead)
-mongo_latency = np.array([408] * len(volumes))
+# Constant ~410ms (no pipeline overhead, no cache)
+mongo_latency = np.array([410] * len(volumes))
 
-# Latency per query (ms) — ARF without MLP
-# Cold: ~665ms but LLM calls add ~500ms on 25% of queries
-arf_no_mlp_latency = np.array([1130, 1130, 1050, 950, 800, 650, 600])
+# Latency per query (ms) — ARF without MLP (LLM rerank path)
+# Cold: ~807ms, cached: ~335ms (same cache benefit)
+arf_no_mlp_latency = np.array([807, 807, 750, 650, 550, 400, 360])
 
 # MRR over query volume — ARF with MLP
 arf_mrr = np.array([0.933, 0.933, 0.933, 0.933, 0.933, 0.933, 0.933])
@@ -110,14 +110,14 @@ ax2.set_ylabel('Avg Latency (ms)', fontsize=11, fontweight='bold')
 ax2.set_title('Latency per Query Over Volume', fontsize=13, fontweight='bold', pad=10)
 ax2.set_xscale('log')
 ax2.set_xlim(0.8, 1500)
-ax2.set_ylim(300, 1250)
+ax2.set_ylim(250, 900)
 ax2.legend(loc='upper right', fontsize=9, framealpha=0.9)
 ax2.grid(True, alpha=0.3, linestyle='-')
 ax2.tick_params(labelsize=10)
 
 # Annotate cache effect on latency
-ax2.annotate('Cache reduces\nlatency to ~500ms',
-             xy=(800, 510), xytext=(100, 900),
+ax2.annotate('In-memory cache\nlatency → 335ms',
+             xy=(800, 345), xytext=(50, 700),
              fontsize=9, color=colors['arf_mlp'],
              arrowprops=dict(arrowstyle='->', color=colors['arf_mlp'], lw=1.5),
              fontweight='bold')
