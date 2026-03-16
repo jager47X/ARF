@@ -1,7 +1,6 @@
 """Unit tests for KeywordMatcher — pure logic, no MongoDB required."""
 
 import os
-import re
 
 # ---------------------------------------------------------------------------
 # We test the static / instance helpers of KeywordMatcher without touching
@@ -275,6 +274,9 @@ class TestConfigThresholds:
             assert not missing, f"{domain} missing threshold keys: {missing}"
 
     def test_thresholds_are_numeric(self):
+        non_numeric_keys = {"mlp_model_path"}
         for domain, thr in DOMAIN_THRESHOLDS.items():
             for key, val in thr.items():
+                if key in non_numeric_keys:
+                    continue
                 assert isinstance(val, (int, float)), f"{domain}.{key} should be numeric, got {type(val)}"

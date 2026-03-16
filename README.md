@@ -178,7 +178,7 @@ flowchart TD
 
 ### Prerequisites
 
-- Python 3.8+
+- Python 3.10+
 - MongoDB Atlas account with vector search enabled
 - OpenAI API key
 - Voyage AI API key
@@ -416,9 +416,38 @@ pytest tests/ -v
 # Live integration tests (requires API keys + MongoDB)
 ARF_LIVE_TESTS=1 pytest tests/test_integration.py -v
 
+# Lint check
+ruff check config.py config_schema.py rag_dependencies/ tests/
+
 # Validate config schemas
 python config_schema.py
 ```
+
+### Docker
+
+Run tests, lint, or the full framework without installing anything locally:
+
+```bash
+# Build the image (installs all dependencies + runs lint check)
+docker build -t arf .
+
+# Run tests
+docker compose up tests
+
+# Run lint only
+docker compose run lint
+
+# Validate config
+docker compose run validate-config
+
+# Run benchmarks (requires .env with API keys)
+docker compose --profile benchmark up benchmark
+
+# Interactive shell
+docker compose run arf bash
+```
+
+> **Note:** Copy `.env.example` to `.env` and fill in your API keys before running services that require MongoDB or OpenAI access.
 
 ### Adding New Data Sources
 

@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import datetime
 import logging
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import tiktoken
 from bson import ObjectId
+from pymongo.errors import PyMongoError
 from services.rag.config import EMBEDDING_MODEL
 from services.rag.rag_dependencies.ai_service import LLM
 from services.rag.rag_dependencies.mongo_manager import MongoManager
@@ -41,7 +42,7 @@ class QueryManager:
     def truncate_text(self, text: str, max_tokens: int = MAX_TOTAL_TOKENS) -> str:
         try:
             enc = tiktoken.encoding_for_model(self.embedding_model)
-        except Exception:
+        except KeyError:
             # Fallback to cl100k_base if model not recognized (e.g., Voyage models)
             enc = tiktoken.get_encoding("cl100k_base")
         toks = enc.encode(text or "")
@@ -113,7 +114,7 @@ class QueryManager:
                         if emb:
                             return np.array(emb, dtype=np.float32).ravel(), True
 
-            except Exception as e:
+            except (PyMongoError, ValueError, TypeError) as e:
                 logger.info("[EMB][VECTOR] Vector search fallback failed: %s", e)
 
         # 4) Generate new embedding and upsert by 'query'
@@ -451,7 +452,7 @@ class QueryManager:
                     logger.warning("[QM][CASE_CACHE][RANGE] Document exists but update had no effect - this may indicate a merge issue")
                 logger.info("[QM][CASE_CACHE][RANGE] Stored search range: %d case IDs for query: %r",
                            len(searched_case_ids), query)
-            except Exception:
+            except PyMongoError:
                 logger.exception("[QM][CASE_CACHE][RANGE] Failed to store search range for query: %r", query)
 
         # Store high-confidence results if any
@@ -477,7 +478,7 @@ class QueryManager:
                 stored_count += 1
                 logger.info("[QM][CASE_CACHE][RESULT] Stored: %s (score: %.3f, id: %s)",
                            case_title[:50], score, case_id[:12])
-            except Exception as e:
+            except PyMongoError as e:
                 logger.exception("[QM][CASE_CACHE] Failed to cache case %s for query: %r - %s",
                                case_doc.get("title", "Unknown"), query, e)
 

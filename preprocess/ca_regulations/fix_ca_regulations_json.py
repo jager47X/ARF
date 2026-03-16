@@ -22,7 +22,7 @@ def is_valid_regulation(reg: Dict[str, Any]) -> bool:
         if text.startswith("Home\n") or "Division" in text[:100]:
             # Check if there's actual content beyond navigation
             lines = text.split("\n")
-            content_lines = [l for l in lines if l.strip() and not any(kw in l for kw in ["Home", "Title", "Division", "Chapter"])]
+            content_lines = [line for line in lines if line.strip() and not any(kw in line for kw in ["Home", "Title", "Division", "Chapter"])]
             if len("\n".join(content_lines)) < 50:
                 continue
         # If we have substantial text, it's valid

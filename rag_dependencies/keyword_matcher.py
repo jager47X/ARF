@@ -1,7 +1,7 @@
 # src/rag/keyword_matcher.py
 import logging
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
@@ -229,7 +229,8 @@ class KeywordMatcher:
         out, seen = [], set()
         for m in matches:
             if m not in seen:
-                seen.add(m); out.append(m)
+                seen.add(m)
+                out.append(m)
         logger.debug("[KW] find_textual hits=%s", out)
         return out
 
@@ -266,7 +267,8 @@ class KeywordMatcher:
         out = []
         for v, sym in vals:
             while num >= v:
-                out.append(sym); num -= v
+                out.append(sym)
+                num -= v
         return "".join(out)
 
     def _extract_article(self, lower_q: str) -> Optional[str]:
@@ -307,7 +309,8 @@ class KeywordMatcher:
         seen, dedup = set(), []
         for n in out:
             if n not in seen:
-                seen.add(n); dedup.append(n)
+                seen.add(n)
+                dedup.append(n)
         return dedup
 
     def refresh(self) -> None:
