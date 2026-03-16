@@ -1,0 +1,165 @@
+{
+  "_description": "Benchmark query dataset for ARF evaluation. Each entry has a query, the domain it targets, expected document titles in the top-k results, and the ideal rank position (1-indexed). Run with: python benchmarks/run_eval.py --production",
+  "queries": [
+    {
+      "id": "USC-001",
+      "domain": "us_constitution",
+      "query": "What does the 14th Amendment say about equal protection?",
+      "expected_titles": ["14th Amendment Section 1"],
+      "ideal_rank": 1,
+      "tags": ["amendment", "civil-rights"]
+    },
+    {
+      "id": "USC-002",
+      "domain": "us_constitution",
+      "query": "freedom of speech",
+      "expected_titles": ["1st Amendment"],
+      "ideal_rank": 1,
+      "tags": ["amendment", "first-amendment"]
+    },
+    {
+      "id": "USC-003",
+      "domain": "us_constitution",
+      "query": "right to bear arms",
+      "expected_titles": ["2nd Amendment"],
+      "ideal_rank": 1,
+      "tags": ["amendment", "second-amendment"]
+    },
+    {
+      "id": "USC-004",
+      "domain": "us_constitution",
+      "query": "unreasonable search and seizure",
+      "expected_titles": ["4th Amendment"],
+      "ideal_rank": 1,
+      "tags": ["amendment", "privacy"]
+    },
+    {
+      "id": "USC-005",
+      "domain": "us_constitution",
+      "query": "double jeopardy due process",
+      "expected_titles": ["5th Amendment"],
+      "ideal_rank": 1,
+      "tags": ["amendment", "due-process"]
+    },
+    {
+      "id": "USC-006",
+      "domain": "us_constitution",
+      "query": "powers not delegated to the federal government",
+      "expected_titles": ["10th Amendment"],
+      "ideal_rank": 1,
+      "tags": ["amendment", "states-rights"]
+    },
+    {
+      "id": "USC-007",
+      "domain": "us_constitution",
+      "query": "abolition of slavery",
+      "expected_titles": ["13th Amendment Section 1"],
+      "ideal_rank": 1,
+      "tags": ["amendment", "civil-rights"]
+    },
+    {
+      "id": "USC-008",
+      "domain": "us_constitution",
+      "query": "supremacy clause federal law preemption",
+      "expected_titles": ["Supremacy Clause"],
+      "ideal_rank": 1,
+      "tags": ["article", "federalism"]
+    },
+    {
+      "id": "USC-009",
+      "domain": "us_constitution",
+      "query": "congressional power to tax and regulate commerce",
+      "expected_titles": ["Powers of Congress"],
+      "ideal_rank": 1,
+      "tags": ["article", "congress"]
+    },
+    {
+      "id": "USC-010",
+      "domain": "us_constitution",
+      "query": "Article 1 Section 8",
+      "expected_titles": ["Powers of Congress"],
+      "ideal_rank": 1,
+      "tags": ["keyword-match", "structured"]
+    },
+    {
+      "id": "USC-011",
+      "domain": "us_constitution",
+      "query": "presidential executive power",
+      "expected_titles": ["The Executive Power"],
+      "ideal_rank": 1,
+      "tags": ["article", "executive"]
+    },
+    {
+      "id": "USC-012",
+      "domain": "us_constitution",
+      "query": "14th amendment",
+      "expected_titles": ["14th Amendment Section 1"],
+      "ideal_rank": 1,
+      "tags": ["keyword-match", "amendment"]
+    },
+    {
+      "id": "USC-013",
+      "domain": "us_constitution",
+      "query": "first amendment rights",
+      "expected_titles": ["1st Amendment"],
+      "ideal_rank": 1,
+      "tags": ["word-number-alternate"]
+    },
+    {
+      "id": "USC-014",
+      "domain": "us_constitution",
+      "query": "immigration naturalization law",
+      "expected_titles": ["Powers of Congress"],
+      "ideal_rank": 1,
+      "tags": ["semantic", "immigration"]
+    },
+    {
+      "id": "USC-015",
+      "domain": "us_constitution",
+      "query": "citizen rights privileges immunities",
+      "expected_titles": ["14th Amendment Section 1"],
+      "ideal_rank": 1,
+      "tags": ["semantic", "civil-rights"]
+    },
+    {
+      "id": "CFR-001",
+      "domain": "code_of_federal_regulations",
+      "query": "asylum eligibility requirements",
+      "expected_titles": [],
+      "ideal_rank": null,
+      "tags": ["immigration", "asylum"]
+    },
+    {
+      "id": "CFR-002",
+      "domain": "code_of_federal_regulations",
+      "query": "employment authorization document",
+      "expected_titles": [],
+      "ideal_rank": null,
+      "tags": ["immigration", "work-permit"]
+    },
+    {
+      "id": "USC-CODE-001",
+      "domain": "us_code",
+      "query": "title 8 immigration nationality act",
+      "expected_titles": [],
+      "ideal_rank": null,
+      "tags": ["immigration", "statute"]
+    },
+    {
+      "id": "USCIS-001",
+      "domain": "uscis_policy",
+      "query": "adjustment of status green card",
+      "expected_titles": [],
+      "ideal_rank": null,
+      "tags": ["immigration", "green-card"]
+    },
+    {
+      "id": "USCIS-002",
+      "domain": "uscis_policy",
+      "query": "naturalization citizenship requirements",
+      "expected_titles": [],
+      "ideal_rank": null,
+      "tags": ["immigration", "citizenship"]
+    }
+  ]
+}
