@@ -169,7 +169,7 @@ flowchart TD
 
 2. **Install dependencies**:
    ```bash
-   pip install -r requirements.txt
+   pip install -e ".[dev]"
    ```
 
 3. **Configure environment variables**:
@@ -425,9 +425,14 @@ arf/
 ### Running Tests
 
 ```bash
-# Run preprocessing verification scripts
-python preprocess/cfr/check_cfr_structure.py
-python preprocess/us_code/verify_clause_numbers.py
+# Unit + integration tests (no API keys needed)
+pytest tests/ -v
+
+# Live integration tests (requires API keys + MongoDB)
+ARF_LIVE_TESTS=1 pytest tests/test_integration.py -v
+
+# Validate config schemas
+python config_schema.py
 ```
 
 ### Adding New Data Sources
@@ -445,6 +450,65 @@ Enable debug mode for detailed logging:
 ```python
 rag = RAG(COLLECTION["US_CONSTITUTION_SET"], debug_mode=True)
 ```
+
+## Evaluation & Benchmarks
+
+ARF includes a full evaluation framework. Run benchmarks with:
+
+```bash
+# Dry run (validate queries, no API calls)
+python benchmarks/run_eval.py --dry-run
+
+# Full evaluation against live system
+python benchmarks/run_eval.py --production
+
+# With hallucination measurement
+python benchmarks/run_eval.py --production --eval-faithfulness
+
+# Specific domain
+python benchmarks/run_eval.py --production --domain us_constitution
+```
+
+### Retrieval Metrics
+
+| Metric | Description |
+|--------|-------------|
+| Precision@k | Fraction of top-k results that are relevant |
+| Recall@k | Fraction of relevant documents found in top-k |
+| MRR | Mean Reciprocal Rank — average of 1/rank of first relevant result |
+| NDCG@k | Normalized Discounted Cumulative Gain |
+
+### Ablation Study: Retrieval Strategy Comparison
+
+The table below compares retrieval performance across ARF's strategies on the US Constitution test set (100 queries, 5 difficulty levels). **Run `python benchmarks/run_eval.py --production --ablation` to populate with your data.**
+
+| Strategy | MRR | P@1 | P@5 | R@5 | NDCG@5 | Avg Latency | Avg Cost/Query |
+|----------|-----|-----|-----|-----|--------|-------------|----------------|
+| Semantic only | — | — | — | — | — | — | — |
+| Semantic + Keyword/Alias | — | — | — | — | — | — | — |
+| Semantic + Keyword/Alias + LLM Rerank | — | — | — | — | — | — | — |
+| Full pipeline (+ caching + rephrasing) | — | — | — | — | — | — | — |
+
+### Hallucination & Faithfulness
+
+| Metric | Value |
+|--------|-------|
+| Faithfulness rate (LLM-as-judge) | — |
+| Hallucination rate | — |
+| Avg faithfulness score | — |
+
+### Cost Analysis
+
+| Metric | Naive RAG | ARF (with caching) |
+|--------|-----------|-------------------|
+| Avg embedding calls/query | — | — |
+| Avg LLM calls/query | — | — |
+| LLM rerank frequency | — | — |
+| Cache hit rate | — | — |
+| Avg cost/query (USD) | — | — |
+| Avg latency (ms) | — | — |
+
+> **Note:** Fill in the tables above by running `python benchmarks/run_eval.py --production`. Results are saved to `benchmarks/results/`.
 
 ## Contributing
 
