@@ -3,16 +3,59 @@ from __future__ import annotations
 
 import datetime
 import logging
+import time
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 from bson import ObjectId
-from pymongo import ASCENDING, TEXT, MongoClient, ReturnDocument, errors
+from pymongo import ASCENDING, TEXT, MongoClient, ReturnDocument
 from pymongo.collation import Collation
 from pymongo.errors import NetworkTimeout, OperationFailure
 from services.rag.config import MONGO_URI
 
 logger = logging.getLogger(__name__)
+
+
+class QueryDocCache:
+    """
+    In-memory TTL cache for query documents.
+
+    Eliminates redundant MongoDB Atlas round-trips (~140-280ms each) for
+    repeated query lookups within the same process. Cache entries expire
+    after `ttl_seconds` to pick up new results written by other processes.
+    """
+
+    def __init__(self, maxsize: int = 1024, ttl_seconds: float = 300.0):
+        self._cache: Dict[str, Tuple[float, Optional[dict]]] = {}
+        self._maxsize = maxsize
+        self._ttl = ttl_seconds
+
+    def get(self, key: str) -> Tuple[bool, Optional[dict]]:
+        """Returns (hit, doc). hit=False means cache miss."""
+        entry = self._cache.get(key)
+        if entry is None:
+            return False, None
+        ts, doc = entry
+        if (time.time() - ts) > self._ttl:
+            del self._cache[key]
+            return False, None
+        return True, doc
+
+    def put(self, key: str, doc: Optional[dict]) -> None:
+        # Evict oldest if full
+        if len(self._cache) >= self._maxsize and key not in self._cache:
+            oldest_key = min(self._cache, key=lambda k: self._cache[k][0])
+            del self._cache[oldest_key]
+        self._cache[key] = (time.time(), doc)
+
+    def invalidate(self, key: str) -> None:
+        self._cache.pop(key, None)
+
+    def clear(self) -> None:
+        self._cache.clear()
+
+    def __len__(self) -> int:
+        return len(self._cache)
 
 # Timezone setup for US-west (California)
 try:
@@ -90,6 +133,12 @@ class MongoManager:
         # Only set cases collection if sql_attached is False AND cases_collection_name exists in config
         if not config.get("sql_attached", False) and "cases_collection_name" in config:
             self.cases = self.db[config["cases_collection_name"]]
+
+        # In-memory cache for query documents — avoids redundant MongoDB Atlas
+        # round-trips (~140-280ms each). TTL=300s to pick up new results.
+        self._query_cache = QueryDocCache(maxsize=2048, ttl_seconds=300.0)
+        logger.info("[CACHE] In-memory query document cache initialized (maxsize=2048, ttl=300s)")
+
         self.ensure_indexes()
 
     # ----------------- helpers -----------------
@@ -156,20 +205,40 @@ class MongoManager:
         """
         Look up by normalized equality on `query`. For legacy docs, fall back to CI equality.
 
+        Uses in-memory cache when no projection is specified (full doc fetch).
+        Projected queries bypass cache since they return partial docs.
+
         Args:
             query_str: Query string to look up
             projection: Optional MongoDB projection dict (e.g., {"results": 1} to only fetch results field)
         """
         norm = self.normalize_query(query_str)
+
+        # In-memory cache: only for full doc fetches (no projection)
+        if projection is None:
+            hit, cached_doc = self._query_cache.get(norm)
+            if hit:
+                logger.debug("[CACHE][MEM] hit for %r", norm)
+                return cached_doc
+
         # Primary: exact match on normalized `query`
         doc = self.query.find_one({"query": norm}, projection=projection)
         if doc:
+            if projection is None:
+                self._query_cache.put(norm, doc)
             return doc
+
         # Legacy/compat: try CI equality on raw input
         raw = (query_str or "").strip()
         if not raw:
+            if projection is None:
+                self._query_cache.put(norm, None)
             return None
-        return self.query.find_one({"query": raw}, projection=projection, collation=_QUERY_COLLATION)
+
+        doc = self.query.find_one({"query": raw}, projection=projection, collation=_QUERY_COLLATION)
+        if projection is None:
+            self._query_cache.put(norm, doc)
+        return doc
 
     def upsert_query_embedding(self, normalized_query: str, embedding: Union[List[float], np.ndarray], original_query: Optional[str] = None) -> None:
         """
@@ -189,6 +258,7 @@ class MongoManager:
             },
             upsert=True
         )
+        self._query_cache.invalidate(normalized_query)
 
     def upsert_query_embedding_and_get_id(
         self,
@@ -212,6 +282,7 @@ class MongoManager:
             upsert=True,
             return_document=ReturnDocument.AFTER,
         )
+        self._query_cache.invalidate(norm)
         return doc["_id"]
 
     def _ensure_query_doc(self, normalized_query: str, language: Optional[str] = None) -> None:
@@ -359,7 +430,7 @@ class MongoManager:
                     try:
                         coll.create_index(keys, name=name, **opts)
                         logger.info("[IDX] %s recreated after dropping conflicts", name)
-                    except Exception as recreate_err:
+                    except Exception:
                         logger.exception("[IDX] %s recreate failed after dropping conflicts", name)
                         raise
 
@@ -745,6 +816,7 @@ class MongoManager:
             query_filter,
             {"$push": {"results": rec}}
         )
+        self._query_cache.invalidate(norm)
 
     def get_query_with_result(self, query: str, limit: Optional[int] = None, collection_key: Optional[str] = None) -> List[Dict[str, Any]]:
         """
@@ -825,6 +897,8 @@ class MongoManager:
             {"$set": {"rephrased_ref": rephrased_id}},
             upsert=False,
         )
+        # Invalidate cache for the original doc (it now has a rephrased_ref)
+        self._query_cache.clear()  # clear all since we matched by _id, not query string
 
     def link_rephrased(self, original_query: str, rephrased_query: str) -> Optional[ObjectId]:
         """
@@ -1464,7 +1538,6 @@ class MongoManager:
             except Exception as update_error:
                 # Handle specific MongoDB errors
                 error_code = getattr(update_error, 'code', None)
-                error_msg = str(update_error)
 
                 if error_code == 11000:  # Duplicate key error
                     logger.warning(f"[TRACK] Duplicate key error (likely race condition). Retrying with find-then-update: {normalized_query[:50]}...")
