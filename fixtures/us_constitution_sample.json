@@ -1,0 +1,62 @@
+[
+  {
+    "title": "1st Amendment",
+    "article": "Amendment",
+    "section": null,
+    "text": "Congress shall make no law respecting an establishment of religion, or prohibiting the free exercise thereof; or abridging the freedom of speech, or of the press; or the right of the people peaceably to assemble, and to petition the Government for a redress of grievances."
+  },
+  {
+    "title": "2nd Amendment",
+    "article": "Amendment",
+    "section": null,
+    "text": "A well regulated Militia, being necessary to the security of a free State, the right of the people to keep and bear Arms, shall not be infringed."
+  },
+  {
+    "title": "4th Amendment",
+    "article": "Amendment",
+    "section": null,
+    "text": "The right of the people to be secure in their persons, houses, papers, and effects, against unreasonable searches and seizures, shall not be violated, and no Warrants shall issue, but upon probable cause, supported by Oath or affirmation, and particularly describing the place to be searched, and the persons or things to be seized."
+  },
+  {
+    "title": "5th Amendment",
+    "article": "Amendment",
+    "section": null,
+    "text": "No person shall be held to answer for a capital, or otherwise infamous crime, unless on a presentment or indictment of a Grand Jury; nor shall any person be subject for the same offence to be twice put in jeopardy of life or limb; nor shall be compelled in any criminal case to be a witness against himself, nor be deprived of life, liberty, or property, without due process of law; nor shall private property be taken for public use, without just compensation."
+  },
+  {
+    "title": "14th Amendment Section 1",
+    "article": "Amendment",
+    "section": "Section 1",
+    "text": "All persons born or naturalized in the United States, and subject to the jurisdiction thereof, are citizens of the United States and of the State wherein they reside. No State shall make or enforce any law which shall abridge the privileges or immunities of citizens of the United States; nor shall any State deprive any person of life, liberty, or property, without due process of law; nor deny to any person within its jurisdiction the equal protection of the laws."
+  },
+  {
+    "title": "Powers of Congress",
+    "article": "Article I",
+    "section": "Section 8",
+    "text": "The Congress shall have Power To lay and collect Taxes, Duties, Imposts and Excises, to pay the Debts and provide for the common Defence and general Welfare of the United States; To borrow Money on the credit of the United States; To regulate Commerce with foreign Nations, and among the several States, and with the Indian Tribes; To establish an uniform Rule of Naturalization, and uniform Laws on the subject of Bankruptcies throughout the United States."
+  },
+  {
+    "title": "Supremacy Clause",
+    "article": "Article VI",
+    "section": null,
+    "text": "This Constitution, and the Laws of the United States which shall be made in Pursuance thereof; and all Treaties made, or which shall be made, under the Authority of the United States, shall be the supreme Law of the Land; and the Judges in every State shall be bound thereby, any Thing in the Constitution or Laws of any State to the Contrary notwithstanding."
+  },
+  {
+    "title": "The Executive Power",
+    "article": "Article II",
+    "section": "Section 1",
+    "text": "The executive Power shall be vested in a President of the United States of America. He shall hold his Office during the Term of four Years, and, together with the Vice President, chosen for the same Term, be elected."
+  },
+  {
+    "title": "10th Amendment",
+    "article": "Amendment",
+    "section": null,
+    "text": "The powers not delegated to the United States by the Constitution, nor prohibited by it to the States, are reserved to the States respectively, or to the people."
+  },
+  {
+    "title": "13th Amendment Section 1",
+    "article": "Amendment",
+    "section": "Section 1",
+    "text": "Neither slavery nor involuntary servitude, except as a punishment for crime whereof the party shall have been duly convicted, shall exist within the United States, or any place subject to their jurisdiction."
+  }
+]
