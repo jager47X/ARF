@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 """
-ARF Cost Analysis — Simulate 100→1000 queries to measure cost at scale.
+ARF Cost Analysis — Measure real API calls across cold, cached, and similar queries.
 
-Takes the 100-query US Constitution test set, runs 100 unique queries,
-then runs 900 similar queries (rephrased variants) to simulate production
-traffic where ~90% of queries are variations of previously seen questions.
-
-Measures: embedding calls, LLM calls, cache hit rate, latency, API costs.
+Instruments every external API call (Voyage embed, OpenAI chat, OpenAI moderation)
+and measures latency, cache hit rate, and cost. Runs a manageable sample then
+extrapolates to 1000 queries.
 
 Usage:
     python benchmarks/run_cost_analysis.py --production
-    python benchmarks/run_cost_analysis.py --production --total 500
+    python benchmarks/run_cost_analysis.py --production --sample 20
 """
 
 from __future__ import annotations
@@ -29,51 +27,131 @@ import standalone_setup  # noqa: F401
 CSV_FILE = Path(__file__).parent / "us_constitution_test_set.csv"
 RESULTS_DIR = Path(__file__).parent / "results"
 
-# Voyage AI pricing (per 1M tokens)
-VOYAGE_PRICE_PER_1M = 0.06  # voyage-3-large input
-# OpenAI pricing (per 1M tokens) — for reranking/rephrasing
-OPENAI_INPUT_PER_1M = 2.50   # gpt-4o input
-OPENAI_OUTPUT_PER_1M = 10.00  # gpt-4o output
-# Avg tokens per query embedding
-AVG_QUERY_TOKENS = 25
-# Avg tokens per LLM rerank call
-AVG_RERANK_INPUT_TOKENS = 800
-AVG_RERANK_OUTPUT_TOKENS = 50
-# Avg tokens per rephrase call
-AVG_REPHRASE_INPUT_TOKENS = 200
-AVG_REPHRASE_OUTPUT_TOKENS = 30
+# Pricing (USD per 1M tokens)
+VOYAGE_PRICE = 0.06        # voyage-3-large input
+OPENAI_INPUT = 2.50        # gpt-4o input
+OPENAI_OUTPUT = 10.00      # gpt-4o output
+MODERATION_PRICE = 0.001   # per call (approx)
 
 
-def load_csv_queries() -> list:
-    queries = []
-    with open(CSV_FILE, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            queries.append({
-                "query": row["Question"].strip(),
-                "difficulty": int(row.get("Case", 1)),
-                "related": row.get("Related to", ""),
-            })
-    return queries
-
-
-REPHRASE_TEMPLATES = [
-    lambda q: q.replace("What", "How").replace("?", "?") if q.startswith("What") else q + " explained",
-    lambda q: q.replace("does", "do").replace("is", "are") if "does" in q or "is " in q else "tell me about " + q,
-    lambda q: q.rstrip("?") + " in detail?",
-    lambda q: q.replace("rights", "freedoms").replace("right", "freedom") if "right" in q.lower() else q + " law",
-    lambda q: q.replace("Amendment", "amendment").replace("Article", "article") if "Amendment" in q else q,
-    lambda q: "explain " + q.lower().rstrip("?"),
-    lambda q: q.replace("protect", "guarantee").replace("say", "state") if "protect" in q or "say" in q else q + " overview",
-    lambda q: q.replace("government", "gov").replace("federal", "national") if "government" in q else q,
-    lambda q: "what are the " + q.lower().rstrip("?") + "?",
+SIMILAR_TRANSFORMS = [
+    lambda q: q.replace("What", "Which") if q.startswith("What") else "explain " + q.lower().rstrip("?"),
+    lambda q: q.rstrip("?") + " in the US?",
+    lambda q: q.replace("rights", "freedoms").replace("right", "freedom") if "right" in q.lower() else q + " overview",
+    lambda q: q.replace("does", "did") if "does" in q else q.replace("is", "was") if " is " in q else q + " today",
+    lambda q: q.replace("Amendment", "amendment") if "Amendment" in q else q.replace("Article", "article") if "Article" in q else q,
+    lambda q: "tell me about " + q.lower().rstrip("?"),
+    lambda q: q.replace("protect", "guarantee").replace("say", "state") if "protect" in q or "say" in q else q + " explained",
+    lambda q: q.replace("government", "state").replace("federal", "national") if "government" in q else q,
+    lambda q: q.replace("the ", "a ", 1) if q.startswith("What") else "how " + q.lower().rstrip("?"),
 ]
 
 
-def generate_similar(query: str, variant: int, rng: random.Random) -> str:
-    """Generate a slightly different version of a query."""
-    template = REPHRASE_TEMPLATES[variant % len(REPHRASE_TEMPLATES)]
-    return template(query)
+def load_csv():
+    queries = []
+    with open(CSV_FILE, newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            queries.append(row["Question"].strip())
+    return queries
+
+
+def instrument_rag(rag):
+    """Patch all external API calls to count them."""
+    import rag_dependencies.ai_service as ai_mod
+
+    counters = {
+        "voyage_calls": 0,
+        "voyage_texts": 0,
+        "voyage_tokens_est": 0,
+        "openai_chat": 0,
+        "openai_input_tokens_est": 0,
+        "openai_output_tokens_est": 0,
+        "moderation": 0,
+    }
+
+    # Patch Voyage
+    orig_voyage = rag.query_manager.openAI.emb_backend.embed
+    def p_voyage(texts):
+        counters["voyage_calls"] += 1
+        counters["voyage_texts"] += len(texts)
+        counters["voyage_tokens_est"] += sum(len(t.split()) * 2 for t in texts)  # rough token est
+        return orig_voyage(texts)
+    rag.query_manager.openAI.emb_backend.embed = p_voyage
+
+    # Patch OpenAI chat
+    orig_chat = ai_mod.openai_client.chat.completions.create
+    def p_chat(*a, **kw):
+        counters["openai_chat"] += 1
+        msgs = kw.get("messages", [])
+        counters["openai_input_tokens_est"] += sum(len(m.get("content", "").split()) * 2 for m in msgs)
+        counters["openai_output_tokens_est"] += 100  # rough estimate
+        return orig_chat(*a, **kw)
+    ai_mod.openai_client.chat.completions.create = p_chat
+
+    # Patch moderation
+    orig_mod = ai_mod.openai_client.moderations.create
+    def p_mod(*a, **kw):
+        counters["moderation"] += 1
+        return orig_mod(*a, **kw)
+    ai_mod.openai_client.moderations.create = p_mod
+
+    return counters
+
+
+def run_phase(rag, queries, counters, label):
+    """Run queries, track per-query stats."""
+    results = []
+    for i, q in enumerate(queries):
+        # Snapshot counters before
+        before = dict(counters)
+        t0 = time.time()
+
+        try:
+            r, _ = rag.process_query(q, language="en")
+            n = len(r)
+        except Exception:
+            n = 0
+
+        elapsed = (time.time() - t0) * 1000
+
+        # Diff counters
+        voyage_this = counters["voyage_calls"] - before["voyage_calls"]
+        voyage_texts_this = counters["voyage_texts"] - before["voyage_texts"]
+        openai_this = counters["openai_chat"] - before["openai_chat"]
+        mod_this = counters["moderation"] - before["moderation"]
+        is_cache_hit = (voyage_this == 0 and openai_this == 0 and mod_this == 0)
+
+        results.append({
+            "query": q,
+            "results": n,
+            "latency_ms": round(elapsed),
+            "voyage_calls": voyage_this,
+            "voyage_texts": voyage_texts_this,
+            "openai_calls": openai_this,
+            "moderation_calls": mod_this,
+            "cache_hit": is_cache_hit,
+        })
+
+        tag = "CACHE" if is_cache_hit else f"V={voyage_this} O={openai_this} M={mod_this}"
+        if (i + 1) % 10 == 0 or (i + 1) == len(queries):
+            print(f"    {label} {i+1}/{len(queries)}: {elapsed:.0f}ms [{tag}] — {q[:40]}")
+
+    return results
+
+
+def compute_cost(counters):
+    voyage_cost = counters["voyage_tokens_est"] * VOYAGE_PRICE / 1_000_000
+    openai_cost = (
+        counters["openai_input_tokens_est"] * OPENAI_INPUT / 1_000_000 +
+        counters["openai_output_tokens_est"] * OPENAI_OUTPUT / 1_000_000
+    )
+    mod_cost = counters["moderation"] * MODERATION_PRICE
+    return {
+        "voyage_usd": round(voyage_cost, 6),
+        "openai_usd": round(openai_cost, 6),
+        "moderation_usd": round(mod_cost, 6),
+        "total_usd": round(voyage_cost + openai_cost + mod_cost, 6),
+    }
 
 
 def main():
@@ -81,7 +159,7 @@ def main():
     parser.add_argument("--production", action="store_const", const="production", dest="env")
     parser.add_argument("--dev", action="store_const", const="dev", dest="env")
     parser.add_argument("--local", action="store_const", const="local", dest="env")
-    parser.add_argument("--total", type=int, default=1000, help="Total queries to simulate")
+    parser.add_argument("--sample", type=int, default=20, help="Number of unique queries to run (default 20)")
     args = parser.parse_args()
 
     env = args.env or "production"
@@ -90,154 +168,111 @@ def main():
     load_environment(env)
     from RAG_interface import RAG
 
-    base_queries = load_csv_queries()
-    total = args.total
-    n_unique = len(base_queries)
-    n_similar = total - n_unique
+    all_queries = load_csv()
+    rng = random.Random(42)
+    sample = rng.sample(all_queries, min(args.sample, len(all_queries)))
 
-    print(f"ARF Cost Analysis — {total} total queries")
-    print(f"  Unique (cold): {n_unique}")
-    print(f"  Similar (should hit cache): {n_similar}")
+    # Generate similar queries (9x the sample to simulate 1:9 ratio)
+    similar = []
+    for i, q in enumerate(sample):
+        for j in range(9):
+            transform = SIMILAR_TRANSFORMS[(i + j) % len(SIMILAR_TRANSFORMS)]
+            similar.append(transform(q))
+
+    print("ARF Cost Analysis")
+    print(f"  Unique queries (cold): {len(sample)}")
+    print(f"  Similar queries (warm): {len(similar)}")
+    print(f"  Total: {len(sample) + len(similar)}")
     print()
 
     rag = RAG(COLLECTION["US_CONSTITUTION_SET"], debug_mode=False)
+    counters = instrument_rag(rag)
 
-    # --- Phase 1: Run unique queries ---
-    print(f"  Phase 1: Running {n_unique} unique queries...")
-    cold_times = []
-    cold_results = []
-    embedding_calls = 0
-    llm_rerank_calls = 0
-    llm_rephrase_calls = 0
-    cache_hits = 0
-    cache_misses = 0
+    # Phase 1: Cold queries
+    print(f"  Phase 1: {len(sample)} unique (cold) queries...")
+    cold_results = run_phase(rag, sample, counters, "COLD")
 
-    for i, q in enumerate(base_queries):
-        t0 = time.time()
-        try:
-            results, _ = rag.process_query(q["query"], language="en")
-            n_results = len(results)
-        except Exception as e:
-            n_results = 0
-        elapsed = (time.time() - t0) * 1000
-        cold_times.append(elapsed)
-        cold_results.append(n_results)
-        embedding_calls += 1  # always 1 embedding call
-        cache_misses += 1  # first time = miss
+    # Phase 2: Similar queries
+    print(f"\n  Phase 2: {len(similar)} similar queries...")
+    warm_results = run_phase(rag, similar, counters, "WARM")
 
-        if (i + 1) % 20 == 0:
-            print(f"    {i+1}/{n_unique} done... avg={sum(cold_times)/len(cold_times):.0f}ms")
+    # Stats
+    cold_hits = sum(1 for r in cold_results if r["cache_hit"])
+    warm_hits = sum(1 for r in warm_results if r["cache_hit"])
+    cold_latencies = [r["latency_ms"] for r in cold_results]
+    warm_latencies = [r["latency_ms"] for r in warm_results]
+    all_latencies = cold_latencies + warm_latencies
 
-    avg_cold = sum(cold_times) / len(cold_times)
-    print(f"  Phase 1 complete: avg={avg_cold:.0f}ms, total={sum(cold_times)/1000:.1f}s")
+    cold_voyage = sum(r["voyage_calls"] for r in cold_results)
+    cold_openai = sum(r["openai_calls"] for r in cold_results)
+    cold_mod = sum(r["moderation_calls"] for r in cold_results)
+    warm_voyage = sum(r["voyage_calls"] for r in warm_results)
+    warm_openai = sum(r["openai_calls"] for r in warm_results)
+    warm_mod = sum(r["moderation_calls"] for r in warm_results)
 
-    # --- Phase 2: Run similar queries ---
-    print(f"\n  Phase 2: Running {n_similar} similar queries...")
-    rng = random.Random(42)
-    warm_times = []
+    total_cost = compute_cost(counters)
+    n_total = len(cold_results) + len(warm_results)
 
-    for i in range(n_similar):
-        base_q = base_queries[i % n_unique]
-        variant = i // n_unique
-        similar_q = generate_similar(base_q["query"], variant, rng)
-
-        t0 = time.time()
-        try:
-            results, _ = rag.process_query(similar_q, language="en")
-            n_results = len(results)
-        except Exception as e:
-            n_results = 0
-        elapsed = (time.time() - t0) * 1000
-        warm_times.append(elapsed)
-        embedding_calls += 1
-
-        # Heuristic: if fast (<2s), likely cache hit
-        if elapsed < 2000:
-            cache_hits += 1
-        else:
-            cache_misses += 1
-            # If slow and went through rephrase, count LLM calls
-            if elapsed > 5000:
-                llm_rephrase_calls += 1
-
-        if (i + 1) % 100 == 0:
-            print(f"    {i+1}/{n_similar} done... avg={sum(warm_times)/len(warm_times):.0f}ms")
-
-    avg_warm = sum(warm_times) / len(warm_times) if warm_times else 0
-
-    # --- Cost calculations ---
-    total_embedding_cost = embedding_calls * AVG_QUERY_TOKENS * VOYAGE_PRICE_PER_1M / 1_000_000
-    total_rerank_cost = llm_rerank_calls * (
-        AVG_RERANK_INPUT_TOKENS * OPENAI_INPUT_PER_1M / 1_000_000 +
-        AVG_RERANK_OUTPUT_TOKENS * OPENAI_OUTPUT_PER_1M / 1_000_000
-    )
-    total_rephrase_cost = llm_rephrase_calls * (
-        AVG_REPHRASE_INPUT_TOKENS * OPENAI_INPUT_PER_1M / 1_000_000 +
-        AVG_REPHRASE_OUTPUT_TOKENS * OPENAI_OUTPUT_PER_1M / 1_000_000
-    )
-    total_api_cost = total_embedding_cost + total_rerank_cost + total_rephrase_cost
-    cache_hit_rate = cache_hits / (cache_hits + cache_misses) if (cache_hits + cache_misses) > 0 else 0
-
-    all_times = cold_times + warm_times
-
-    # --- Print results ---
     print(f"\n{'='*70}")
     print("COST ANALYSIS RESULTS")
     print(f"{'='*70}")
-    print(f"  Total queries:              {total}")
-    print(f"  Unique (cold):              {n_unique}")
-    print(f"  Similar (warm):             {n_similar}")
-    print(f"")
-    print(f"  Embedding calls:            {embedding_calls}")
-    print(f"  Embedding calls/query:      {embedding_calls/total:.2f}")
-    print(f"  LLM rerank calls:           {llm_rerank_calls}")
-    print(f"  LLM rephrase calls:         {llm_rephrase_calls}")
-    print(f"  LLM calls/query:            {(llm_rerank_calls + llm_rephrase_calls)/total:.3f}")
-    print(f"  LLM rerank frequency:       {llm_rerank_calls/total:.1%}")
-    print(f"")
-    print(f"  Cache hits:                 {cache_hits}")
-    print(f"  Cache misses:               {cache_misses}")
-    print(f"  Cache hit rate:             {cache_hit_rate:.1%}")
-    print(f"")
-    print(f"  Avg latency (cold):         {avg_cold:.0f} ms")
-    print(f"  Avg latency (similar):      {avg_warm:.0f} ms")
-    print(f"  Avg latency (overall):      {sum(all_times)/len(all_times):.0f} ms")
-    print(f"  P50 latency:                {sorted(all_times)[len(all_times)//2]:.0f} ms")
-    print(f"  P99 latency:                {sorted(all_times)[int(len(all_times)*0.99)]:.0f} ms")
-    print(f"")
-    print(f"  API Costs:")
-    print(f"    Embedding (Voyage):       ${total_embedding_cost:.6f}")
-    print(f"    Reranking (OpenAI):       ${total_rerank_cost:.6f}")
-    print(f"    Rephrasing (OpenAI):      ${total_rephrase_cost:.6f}")
-    print(f"    Total API cost:           ${total_api_cost:.6f}")
-    print(f"    Cost per query:           ${total_api_cost/total:.8f}")
+    print(f"  Queries:          {n_total} total ({len(sample)} cold + {len(similar)} similar)")
+    print()
+    print(f"  --- COLD ({len(sample)} unique queries) ---")
+    print(f"  Voyage embed calls:     {cold_voyage} ({cold_voyage/len(sample):.1f}/query)")
+    print(f"  OpenAI chat calls:      {cold_openai} ({cold_openai/len(sample):.2f}/query)")
+    print(f"  Moderation calls:       {cold_mod} ({cold_mod/len(sample):.2f}/query)")
+    print(f"  Cache hits:             {cold_hits}/{len(sample)} ({cold_hits/len(sample):.0%})")
+    print(f"  Avg latency:            {sum(cold_latencies)/len(cold_latencies):.0f} ms")
+    print()
+    print(f"  --- SIMILAR ({len(similar)} rephrased queries) ---")
+    print(f"  Voyage embed calls:     {warm_voyage} ({warm_voyage/len(similar):.2f}/query)")
+    print(f"  OpenAI chat calls:      {warm_openai} ({warm_openai/len(similar):.2f}/query)")
+    print(f"  Moderation calls:       {warm_mod} ({warm_mod/len(similar):.2f}/query)")
+    print(f"  Cache hits:             {warm_hits}/{len(similar)} ({warm_hits/len(similar):.0%})")
+    print(f"  Avg latency:            {sum(warm_latencies)/len(warm_latencies):.0f} ms")
+    print()
+    print("  --- OVERALL ---")
+    print(f"  Total Voyage calls:     {counters['voyage_calls']}")
+    print(f"  Total Voyage texts:     {counters['voyage_texts']}")
+    print(f"  Total OpenAI calls:     {counters['openai_chat']}")
+    print(f"  Total Moderation:       {counters['moderation']}")
+    print(f"  Cache hit rate:         {(cold_hits + warm_hits)/n_total:.1%}")
+    print(f"  Avg latency:            {sum(all_latencies)/len(all_latencies):.0f} ms")
+    print(f"  P50 latency:            {sorted(all_latencies)[len(all_latencies)//2]:.0f} ms")
+    print(f"  P99 latency:            {sorted(all_latencies)[int(len(all_latencies)*0.99)]:.0f} ms")
+    print()
+    print("  --- API COST ---")
+    print(f"  Voyage embedding:       ${total_cost['voyage_usd']:.6f}")
+    print(f"  OpenAI chat:            ${total_cost['openai_usd']:.6f}")
+    print(f"  OpenAI moderation:      ${total_cost['moderation_usd']:.6f}")
+    print(f"  Total:                  ${total_cost['total_usd']:.6f}")
+    print(f"  Cost/query (overall):   ${total_cost['total_usd']/n_total:.8f}")
+    print(f"  Cost/query (cold only): ${total_cost['total_usd']/len(sample):.8f}")
+    print()
+
+    # Extrapolation to 1000
+    cold_cost_per = total_cost['total_usd'] / len(sample) if len(sample) > 0 else 0
+    print("  --- EXTRAPOLATION TO 1000 QUERIES (100 cold + 900 similar) ---")
+    print(f"  100 cold queries:       ${cold_cost_per * 100:.4f}")
+    print("  900 cached (est $0):    $0.0000")
+    print(f"  Total est. 1000:        ${cold_cost_per * 100:.4f}")
+    print(f"  Est. cost/query @1000:  ${cold_cost_per * 100 / 1000:.6f}")
     print(f"{'='*70}")
 
     # Save
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     ts = time.strftime("%Y%m%d_%H%M%S")
     path = RESULTS_DIR / f"cost_analysis_{ts}.json"
-    result = {
-        "total_queries": total,
-        "unique_queries": n_unique,
-        "similar_queries": n_similar,
-        "embedding_calls": embedding_calls,
-        "llm_rerank_calls": llm_rerank_calls,
-        "llm_rephrase_calls": llm_rephrase_calls,
-        "cache_hits": cache_hits,
-        "cache_misses": cache_misses,
-        "cache_hit_rate": round(cache_hit_rate, 3),
-        "avg_latency_cold_ms": round(avg_cold, 0),
-        "avg_latency_warm_ms": round(avg_warm, 0),
-        "avg_latency_overall_ms": round(sum(all_times) / len(all_times), 0),
-        "p50_latency_ms": round(sorted(all_times)[len(all_times) // 2], 0),
-        "p99_latency_ms": round(sorted(all_times)[int(len(all_times) * 0.99)], 0),
-        "total_api_cost_usd": round(total_api_cost, 6),
-        "cost_per_query_usd": round(total_api_cost / total, 8),
+    save_data = {
+        "cold": {"count": len(sample), "cache_hits": cold_hits, "voyage": cold_voyage, "openai": cold_openai, "moderation": cold_mod, "avg_latency_ms": round(sum(cold_latencies)/len(cold_latencies))},
+        "similar": {"count": len(similar), "cache_hits": warm_hits, "voyage": warm_voyage, "openai": warm_openai, "moderation": warm_mod, "avg_latency_ms": round(sum(warm_latencies)/len(warm_latencies))},
+        "total_cost": total_cost,
+        "counters": dict(counters),
     }
     with open(path, "w") as f:
-        json.dump(result, f, indent=2)
-    print(f"\n  Results saved to: {path}")
+        json.dump(save_data, f, indent=2)
+    print(f"\n  Saved: {path}")
 
 
 if __name__ == "__main__":
