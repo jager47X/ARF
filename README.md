@@ -24,7 +24,7 @@ Most RAG pipelines rely on expensive LLM calls to rerank and verify retrieval re
   3. **MLP Reranker** — A 128-64-32 MLP trained on 3,600 labeled pairs scores borderline candidates in <5ms at $0.00. Confidently accepts (p ≥ 0.6) or rejects (p ≤ 0.4) ~80% of remaining candidates.
   4. **LLM Fallback** — Only the ~20% of candidates where the MLP is uncertain (0.4 < p < 0.6) go to the LLM verifier. This is the only stage that costs money, and it handles the smallest batch.
 - **Domain-specific thresholds** — Each legal domain (US Constitution, CFR, US Code, USCIS Policy) has independently tuned thresholds and bias maps, avoiding one-size-fits-all degradation.
-- **Aggressive caching** — Embedding, result, and summary caching makes repeated/similar queries cost $0.00 with ~500ms latency. Cost stays flat as query volume grows.
+- **Aggressive caching** — In-memory + MongoDB caching makes repeated/similar queries cost $0.00 with **335ms latency** (faster than raw MongoDB Atlas at 410ms). Cost stays flat as query volume grows.
 - **Automated retraining** — Monthly pipeline exports new LLM judgments from production, retrains the MLP, and only deploys if performance improves.
 
 ## 🚀 Live Demo
@@ -100,8 +100,8 @@ ARF/
 ├── benchmarks/               # Evaluation and benchmarking
 │   ├── run_eval.py           # Full evaluation runner
 │   ├── run_baseline.py       # Baseline measurement (before MLP)
-│   ├── run_ablation_full.py  # Full ablation study (7 strategies)
-│   ├── run_ablation.py       # Basic strategy comparison
+│   ├── run_ablation_full.py  # Full benchmark (7 strategies)
+│   ├── run_benchmark.py      # Basic strategy comparison
 │   ├── train_reranker.py     # MLP training pipeline
 │   ├── retrain_monthly.py    # Automated monthly retraining
 │   ├── cost_comparison.py    # Cost savings analysis
@@ -471,7 +471,7 @@ rag = RAG(COLLECTION["US_CONSTITUTION_SET"], debug_mode=True)
 
 ## Evaluation & Benchmarks
 
-### Benchmark: Ablation Study
+### Benchmark
 
 Measured on 15 US Constitution benchmark queries. Each strategy runs in its **own isolated RAG instance** — strategies build incrementally to show the marginal gain of each layer. Latency measured with in-memory query cache enabled.
 
@@ -643,7 +643,7 @@ The retraining pipeline:
 ### Running Benchmarks
 
 ```bash
-# Ablation study (all strategies compared incrementally)
+# Full benchmark (all strategies compared incrementally)
 python benchmarks/run_ablation_full.py --production
 
 # Baseline measurement (current pipeline without MLP)
