@@ -16,8 +16,8 @@ Usage:
     # With hallucination evaluation
     python benchmarks/run_eval.py --production --eval-faithfulness
 
-    # With ablation (compare strategies)
-    python benchmarks/run_eval.py --production --ablation
+    # With benchmark (compare strategies)
+    python benchmarks/run_eval.py --production --benchmark
 
     # Dry run (just validate benchmark queries, no API calls)
     python benchmarks/run_eval.py --dry-run
@@ -81,7 +81,7 @@ def run_evaluation(
     queries: list,
     env: str = "production",
     eval_faithfulness: bool = False,
-    ablation: bool = False,
+    benchmark: bool = False,
 ) -> dict:
     """
     Run full evaluation against live ARF.
@@ -277,7 +277,7 @@ def main():
     parser.add_argument("--local", action="store_const", const="local", dest="env")
     parser.add_argument("--domain", type=str, default=None, help="Filter to a specific domain")
     parser.add_argument("--eval-faithfulness", action="store_true", help="Run hallucination evaluation")
-    parser.add_argument("--ablation", action="store_true", help="Compare retrieval strategies")
+    parser.add_argument("--benchmark", action="store_true", help="Compare retrieval strategies")
     parser.add_argument("--dry-run", action="store_true", help="Validate queries without API calls")
     args = parser.parse_args()
 
@@ -293,7 +293,7 @@ def main():
     results = run_evaluation(
         queries, env=env,
         eval_faithfulness=args.eval_faithfulness,
-        ablation=args.ablation,
+        benchmark=args.benchmark,
     )
 
     path = save_results(results)

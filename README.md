@@ -33,6 +33,7 @@ ARF is a production-ready RAG framework that enables:
 - **Intelligent semantic search** using MongoDB Atlas Vector Search with Voyage AI embeddings
 - **Hybrid search strategies** combining semantic, keyword, alias, and exact matching
 - **LLM-powered reranking** to improve result relevance and ordering
+- **MLP-based learned reranking** to reduce LLM costs while maintaining quality
 - **Bilingual support** (English/Spanish) for queries and responses
 - **Automatic document ingestion** and embedding generation
 - **Domain-specific threshold tuning** for optimal retrieval performance
@@ -82,8 +83,25 @@ ARF/
 │   ├── alias_manager.py      # Alias/keyword search for US Constitution
 │   ├── keyword_matcher.py    # Structured keyword matching
 │   ├── llm_verifier.py       # LLM-based result reranking
+│   ├── mlp_reranker.py       # MLP-based learned reranker (cost optimizer)
+│   ├── feature_extractor.py  # Feature engineering for MLP reranker
 │   ├── openai_service.py     # OpenAI API integration
 │   └── ai_service.py         # AI service abstraction
+├── models/                   # Trained ML models
+│   └── mlp_reranker.joblib   # Trained MLP reranker model
+├── benchmarks/               # Evaluation and benchmarking
+│   ├── run_eval.py           # Full evaluation runner
+│   ├── run_baseline.py       # Baseline measurement (before MLP)
+│   ├── run_benchmark.py      # Strategy comparison (semantic/hybrid/full)
+│   ├── run_cost_analysis.py  # Cost analysis at scale (100→1000 queries)
+│   ├── train_reranker.py     # MLP training pipeline
+│   ├── retrain_monthly.py    # Automated monthly retraining
+│   ├── cost_comparison.py    # Cost savings analysis
+│   ├── metrics.py            # Retrieval metrics (P@k, R@k, MRR, NDCG)
+│   ├── cost_tracker.py       # Query cost tracking
+│   ├── hallucination_eval.py # Faithfulness evaluation
+│   ├── benchmark_queries.json # Benchmark query dataset
+│   └── eval_dataset.json     # Labeled evaluation dataset (200+ queries)
 └── preprocess/               # Data ingestion scripts
     ├── us_constitution/      # US Constitution ingestion
     ├── us_code/              # US Code ingestion
@@ -125,7 +143,10 @@ flowchart TD
     L --> M{"score >= RAG_SEARCH\n(0.85)?"}
     M -- yes --> N["Accept result"]
     M -- no --> O{"score >= LLM_VERIF\n(0.70)?"}
-    O -- yes --> P["LLM Reranking\n(borderline verification)"]
+    O -- yes --> MLP{"MLP Reranker\n(learned model)"}
+    MLP -- "confident accept\n(p >= 0.6)" --> N
+    MLP -- "confident reject\n(p <= 0.4)" --> Q
+    MLP -- "uncertain\n(0.4 < p < 0.6)" --> P["LLM Reranking\n(fallback only)"]
     O -- no --> Q{"Rephrase\nattempts left?"}
     P -- verified --> N
     P -- rejected --> Q
@@ -398,6 +419,36 @@ LLM-based result reranking:
 - Borderline result reranking
 - Confidence adjustment and score refinement
 
+### MLP Reranker (`mlp_reranker.py`)
+
+Learned reranker that reduces LLM verification costs:
+- scikit-learn MLPClassifier (128-64-32 hidden layers)
+- Isotonic calibration for well-calibrated output probabilities
+- Configurable uncertainty threshold for LLM fallback
+- <5ms inference time per batch
+
+### Feature Extractor (`feature_extractor.py`)
+
+Extracts 15-dimensional feature vectors for query-document pairs:
+
+| Feature | Description |
+|---------|-------------|
+| `semantic_score` | Raw cosine similarity from vector search |
+| `bm25_score` | Term-frequency based relevance approximation |
+| `alias_match` | Whether query matches a document alias |
+| `keyword_match` | Whether query matches via keyword pattern |
+| `domain_type` | Encoded domain (0-3) |
+| `document_length` | Log-scaled character count |
+| `query_length` | Query character count |
+| `section_depth` | Depth in legal hierarchy |
+| `embedding_cosine_similarity` | Direct embedding cosine similarity |
+| `match_type` | 0=none, 1=partial, 2=exact |
+| `score_gap_from_top` | Gap from highest-scored document |
+| `query_term_coverage` | Fraction of query terms in document |
+| `title_similarity` | Jaccard similarity between query and title |
+| `has_nested_content` | Whether document has clauses/sections |
+| `bias_adjustment` | Domain-specific bias applied |
+
 ### Mongo Manager (`mongo_manager.py`)
 
 MongoDB connection and query management:
@@ -495,7 +546,7 @@ Measured on 15 US Constitution benchmark queries. Each strategy runs in its **ow
 > - **ARF improves over time**: when similar queries arrive (~1 word changed, ~90% embedding similarity), ARF's cache returns previously verified high-confidence results, boosting MRR to **0.679** and R@5 to **0.743** — surpassing raw Atlas on precision while maintaining quality guarantees.
 > - **Latency**: similar queries run at 1,065ms vs 1,130ms cold. The cache skips vector search, moderation, and LLM reranking, but embedding lookup and document enrichment still add ~700ms.
 >
-> Run `python benchmarks/run_ablation.py --production` to reproduce.
+> Run `python benchmarks/run_benchmark.py --production` to reproduce.
 
 ### Cost Analysis
 
