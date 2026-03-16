@@ -562,6 +562,128 @@ Measured on 15 US Constitution benchmark queries. Each strategy runs in its **ow
 
 > **Cost thesis:** MongoDB Atlas alone is faster per-query but provides no quality filtering, caching, or hallucination reduction. ARF adds ~700ms overhead for threshold gating, embedding caching, and document enrichment — but **improves accuracy over time** as the cache accumulates verified results. In production with repeated/similar queries, the effective cost per high-quality result decreases as cache hit rate grows.
 
+## MLP Reranker
+
+The MLP reranker is a learned second-stage filter that sits between threshold filtering and the LLM verifier. Its purpose is to reduce expensive LLM verification calls while maintaining (or improving) retrieval quality.
+
+### Architecture
+
+```
+                    ┌──────────────────────┐
+                    │   Vector Search      │
+                    │  (MongoDB Atlas)     │
+                    └──────────┬───────────┘
+                               │ candidates with scores
+                    ┌──────────▼───────────┐
+                    │  Threshold Filter    │
+                    │  (ABC Gates)         │
+                    └──────────┬───────────┘
+                               │ score >= 0.85 → Accept
+                               │ score < 0.70  → Reject
+                               │ 0.70-0.85     → ▼
+                    ┌──────────▼───────────┐
+                    │  Feature Extractor   │
+                    │  (15 features)       │
+                    └──────────┬───────────┘
+                               │ feature vectors
+                    ┌──────────▼───────────┐
+                    │   MLP Reranker       │
+                    │  (128→64→32 MLP)     │
+                    │  + isotonic calib.   │
+                    └──────────┬───────────┘
+                        ┌──────┼──────┐
+                   p≥0.6│  0.4<p<0.6  │p≤0.4
+                        │      │      │
+                   Accept   ┌──▼──┐  Reject
+                            │ LLM │
+                            │Verif│
+                            └──┬──┘
+                          Accept/Reject
+```
+
+### How the MLP Reduces Costs
+
+For borderline candidates (score 0.70-0.85), instead of always calling the LLM verifier:
+
+1. **Extract features** — 15-dimensional vector capturing semantic score, BM25, keyword match, alias match, document structure, and more
+2. **MLP predicts** — Outputs calibrated probability of relevance (0-1)
+3. **Route by confidence**:
+   - **p >= 0.6**: Accept without LLM call
+   - **p <= 0.4**: Reject without LLM call
+   - **0.4 < p < 0.6**: Uncertain — escalate to LLM verifier
+
+### Training the MLP
+
+```bash
+# Generate features from evaluation dataset + MongoDB vector search
+python benchmarks/train_reranker.py --dataset benchmarks/eval_dataset.json --production
+
+# With feature caching (faster retraining)
+python benchmarks/train_reranker.py --dataset benchmarks/eval_dataset.json \
+    --features-cache benchmarks/features_cache.json --production
+
+# Retrain from cached features (no MongoDB needed)
+python benchmarks/train_reranker.py --retrain --features-cache benchmarks/features_cache.json
+```
+
+The training pipeline:
+1. Loads evaluation queries (200+ across 4 legal domains)
+2. Generates features by running vector search for each query
+3. Labels: relevant (score >= 2 in eval dataset) = 1, not relevant = 0
+4. Compares Logistic Regression vs MLP (64,32) vs MLP (128,64,32)
+5. Stratified 5-fold cross-validation per domain
+6. Trains final model with isotonic calibration
+7. Reports accuracy, precision, recall, F1, AUC-ROC, calibration quality
+
+### Automated Monthly Retraining
+
+```bash
+# Dry run — check what would change
+python benchmarks/retrain_monthly.py --production --dry-run
+
+# Retrain from recent LLM judgments
+python benchmarks/retrain_monthly.py --production
+
+# Custom lookback window
+python benchmarks/retrain_monthly.py --production --lookback-days 60
+```
+
+The retraining pipeline:
+1. Exports recent LLM verifier judgments from MongoDB (last 30 days)
+2. Generates features for new query-document pairs
+3. Merges with existing training data (deduplicates)
+4. Retrains MLP on expanded dataset
+5. Validates on held-out test set
+6. Only deploys new model if F1 >= old model
+
+### Running Benchmarks
+
+```bash
+# Basic strategy comparison (semantic, hybrid, full pipeline)
+python benchmarks/run_benchmark.py --production
+
+# Full benchmark with MLP configurations
+python benchmarks/run_benchmark.py --production --domain us_constitution
+
+# Cost analysis at scale (100→1000 queries)
+python benchmarks/run_cost_analysis.py --production
+```
+
+### Baseline Measurement
+
+```bash
+# Measure current pipeline performance (before MLP)
+python benchmarks/run_baseline.py --production
+
+# With hallucination evaluation
+python benchmarks/run_baseline.py --production --eval-faithfulness
+
+# Specific domain
+python benchmarks/run_baseline.py --production --domain us_constitution
+```
+
+Metrics reported: P@k, R@k, MRR, NDCG@k, latency (p50/p95/p99), LLM call frequency, cost-per-query.
+
 ## Contributing
 
 Contributions are welcome! Please:
