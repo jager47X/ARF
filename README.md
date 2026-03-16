@@ -461,6 +461,12 @@ Measured on 15 US Constitution benchmark queries. Each strategy runs in its **ow
 >
 > Run `python benchmarks/run_ablation_full.py --production` to reproduce.
 
+### Cost, Latency & Quality Over Volume
+
+![Cost, Latency & MRR Comparison](media/cost_latency_comparison.png)
+
+*ARF + MLP (blue) vs ARF LLM rerank (amber) vs MongoDB Atlas raw (red). As cache grows, ARF cost drops to $0 and latency to ~500ms — while maintaining MRR 0.933 (vs MongoDB's 0.665).*
+
 ### Cost Analysis
 
 Measured by instrumenting every external API call across 200 live queries (20 unique + 180 similar). Run `python benchmarks/run_cost_analysis.py --production` to reproduce.
