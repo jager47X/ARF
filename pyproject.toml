@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "arf"
+version = "0.1.0"
+description = "Advanced Retrieval Framework — a RAG system optimized for legal document search"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.8"
+dependencies = [
+    "numpy>=1.24",
+    "openai>=1.0",
+    "pymongo>=4.0",
+    "python-dotenv>=1.0",
+    "tiktoken>=0.5",
+    "nltk>=3.8",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["rag_dependencies*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
