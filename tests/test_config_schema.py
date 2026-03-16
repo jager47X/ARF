@@ -11,6 +11,7 @@ try:
     from pydantic import ValidationError
 
     from config_schema import CollectionConfig, DomainThresholds, FieldMapping
+
     _has_pydantic = True
 except ImportError:
     _has_pydantic = False
@@ -94,9 +95,14 @@ class TestCollectionConfig:
             document_type="US Constitution",
             sql_attached=False,
             thresholds=DomainThresholds(
-                query_search=0.65, alias_search=0.85, RAG_SEARCH_min=0.65,
-                LLM_VERIFication=0.70, RAG_SEARCH=0.85, confident=0.85,
-                FILTER_GAP=0.20, LLM_SCORE=0.10,
+                query_search=0.65,
+                alias_search=0.85,
+                RAG_SEARCH_min=0.65,
+                LLM_VERIFication=0.70,
+                RAG_SEARCH=0.85,
+                confident=0.85,
+                FILTER_GAP=0.20,
+                LLM_SCORE=0.10,
             ),
             field_mapping=FieldMapping(title="title"),
         )

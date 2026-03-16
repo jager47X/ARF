@@ -112,17 +112,13 @@ class TestAliasMatch:
     def test_true_when_match(self, extractor_us_const):
         doc = _make_doc(title="Second Amendment")
         alias_matches = [("2A", "Second Amendment", 0.95)]
-        feats = extractor_us_const.extract_features(
-            "second amendment", doc, 0.5, alias_matches=alias_matches
-        )
+        feats = extractor_us_const.extract_features("second amendment", doc, 0.5, alias_matches=alias_matches)
         assert feats["alias_match"] == 1
 
     def test_false_when_no_match(self, extractor_us_const):
         doc = _make_doc(title="First Amendment")
         alias_matches = [("2A", "Second Amendment", 0.95)]
-        feats = extractor_us_const.extract_features(
-            "first amendment", doc, 0.5, alias_matches=alias_matches
-        )
+        feats = extractor_us_const.extract_features("first amendment", doc, 0.5, alias_matches=alias_matches)
         assert feats["alias_match"] == 0
 
     def test_false_when_none(self, extractor_us_const):
@@ -133,16 +129,12 @@ class TestAliasMatch:
 class TestKeywordMatch:
     def test_true_when_match(self, extractor_us_const):
         doc = _make_doc(title="Powers of Congress")
-        feats = extractor_us_const.extract_features(
-            "powers", doc, 0.5, keyword_matches=["Powers of Congress"]
-        )
+        feats = extractor_us_const.extract_features("powers", doc, 0.5, keyword_matches=["Powers of Congress"])
         assert feats["keyword_match"] == 1
 
     def test_false_when_no_match(self, extractor_us_const):
         doc = _make_doc(title="First Amendment")
-        feats = extractor_us_const.extract_features(
-            "first", doc, 0.5, keyword_matches=["Powers of Congress"]
-        )
+        feats = extractor_us_const.extract_features("first", doc, 0.5, keyword_matches=["Powers of Congress"])
         assert feats["keyword_match"] == 0
 
 
@@ -214,9 +206,7 @@ class TestSectionDepth:
 class TestEmbeddingCosineSimilarity:
     def test_identical_vectors(self, extractor_us_const):
         vec = [1.0, 0.0, 0.0]
-        feats = extractor_us_const.extract_features(
-            "q", _make_doc(), 0.5, query_embedding=vec, doc_embedding=vec
-        )
+        feats = extractor_us_const.extract_features("q", _make_doc(), 0.5, query_embedding=vec, doc_embedding=vec)
         assert feats["embedding_cosine_similarity"] == pytest.approx(1.0, abs=1e-6)
 
     def test_orthogonal_vectors(self, extractor_us_const):
@@ -230,59 +220,43 @@ class TestEmbeddingCosineSimilarity:
         assert feats["embedding_cosine_similarity"] == pytest.approx(0.0, abs=1e-6)
 
     def test_none_embedding(self, extractor_us_const):
-        feats = extractor_us_const.extract_features(
-            "q", _make_doc(), 0.5, query_embedding=None, doc_embedding=None
-        )
+        feats = extractor_us_const.extract_features("q", _make_doc(), 0.5, query_embedding=None, doc_embedding=None)
         assert feats["embedding_cosine_similarity"] == pytest.approx(0.0)
 
 
 class TestMatchType:
     def test_exact_keyword(self, extractor_us_const):
         doc = _make_doc(title="Second Amendment")
-        feats = extractor_us_const.extract_features(
-            "second amendment", doc, 0.5, keyword_matches=["Second Amendment"]
-        )
+        feats = extractor_us_const.extract_features("second amendment", doc, 0.5, keyword_matches=["Second Amendment"])
         assert feats["match_type"] == 2
 
     def test_partial_keyword(self, extractor_us_const):
         doc = _make_doc(title="14th Amendment Section 1")
-        feats = extractor_us_const.extract_features(
-            "14th amendment", doc, 0.5, keyword_matches=["14th Amendment"]
-        )
+        feats = extractor_us_const.extract_features("14th amendment", doc, 0.5, keyword_matches=["14th Amendment"])
         assert feats["match_type"] == 1
 
     def test_no_match(self, extractor_us_const):
         doc = _make_doc(title="Supremacy Clause")
-        feats = extractor_us_const.extract_features(
-            "quantum physics", doc, 0.5, keyword_matches=[], alias_matches=[]
-        )
+        feats = extractor_us_const.extract_features("quantum physics", doc, 0.5, keyword_matches=[], alias_matches=[])
         assert feats["match_type"] == 0
 
     def test_exact_alias(self, extractor_us_const):
         doc = _make_doc(title="Second Amendment")
-        feats = extractor_us_const.extract_features(
-            "2A", doc, 0.5, alias_matches=[("2A", "Second Amendment", 0.95)]
-        )
+        feats = extractor_us_const.extract_features("2A", doc, 0.5, alias_matches=[("2A", "Second Amendment", 0.95)])
         assert feats["match_type"] == 2
 
 
 class TestScoreGapFromTop:
     def test_gap_computation(self, extractor_us_const):
-        feats = extractor_us_const.extract_features(
-            "q", _make_doc(), semantic_score=0.7, top_score=0.9
-        )
+        feats = extractor_us_const.extract_features("q", _make_doc(), semantic_score=0.7, top_score=0.9)
         assert feats["score_gap_from_top"] == pytest.approx(0.2, abs=1e-6)
 
     def test_top_result_gap_zero(self, extractor_us_const):
-        feats = extractor_us_const.extract_features(
-            "q", _make_doc(), semantic_score=0.9, top_score=0.9
-        )
+        feats = extractor_us_const.extract_features("q", _make_doc(), semantic_score=0.9, top_score=0.9)
         assert feats["score_gap_from_top"] == pytest.approx(0.0)
 
     def test_no_top_score(self, extractor_us_const):
-        feats = extractor_us_const.extract_features(
-            "q", _make_doc(), semantic_score=0.7, top_score=None
-        )
+        feats = extractor_us_const.extract_features("q", _make_doc(), semantic_score=0.7, top_score=None)
         assert feats["score_gap_from_top"] == pytest.approx(0.0)
 
 
