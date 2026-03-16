@@ -89,6 +89,7 @@ def _make_processor(config_overrides=None) -> QueryProcessor:
 def _doc(title, _id=None, article="", section=""):
     """Create a minimal document dict."""
     from bson import ObjectId
+
     return {
         "_id": _id or ObjectId(),
         "title": title,
@@ -246,11 +247,10 @@ class TestProcessQueryModeration:
     def test_moderation_failure_continues_search(self):
         """If moderation check fails, search continues as fallback."""
         import openai as openai_mod
+
         proc = _make_processor()
         proc.db.find_query_doc_ci.return_value = None
-        proc.openAI.check_moderation.side_effect = openai_mod.APIConnectionError(
-            request=MagicMock()
-        )
+        proc.openAI.check_moderation.side_effect = openai_mod.APIConnectionError(request=MagicMock())
         proc.openAI.check_us_constitution_relevance.return_value = True
         proc.openAI.remove_personal_info.side_effect = lambda q: q
         proc.openAI.fix_query.side_effect = lambda q: q
@@ -421,6 +421,7 @@ class TestApplyMainAbcGates:
         """Same document from accepted and verified is deduplicated (best score kept)."""
         proc = _make_processor()
         from bson import ObjectId
+
         shared_id = ObjectId()
         doc1 = _doc("Same Doc", _id=shared_id)
         doc2 = _doc("Same Doc", _id=shared_id)
