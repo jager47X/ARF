@@ -487,7 +487,9 @@ The table below compares retrieval performance across ARF's strategies on the US
 | Semantic only | — | — | — | — | — | — | — |
 | Semantic + Keyword/Alias | — | — | — | — | — | — | — |
 | Semantic + Keyword/Alias + LLM Rerank | — | — | — | — | — | — | — |
-| Full pipeline (+ caching + rephrasing) | — | — | — | — | — | — | — |
+| **Full pipeline (+ caching + rephrasing)** | **0.489** | **0.400** | **0.133** | **0.580** | **0.503** | **1,131 ms** | **~$0.001** |
+
+> *Baseline measured on 15 US Constitution benchmark queries (2026-03-16). 10/15 queries hit expected document in top-10 (R@10=0.580). Re-run with `--ablation` to fill in strategy comparisons.*
 
 ### Hallucination & Faithfulness
 
