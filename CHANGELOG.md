@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Cost tracking** instrumentation for token usage, LLM call frequency, and cache hit rates (`benchmarks/cost_tracker.py`)
 - **Pydantic config validation** with range checks and threshold ordering constraints (`config_schema.py`)
 - **Mermaid architecture diagram** in README showing full query processing pipeline
-- **Ablation study template** with comparison tables for retrieval strategies
+- **Benchmark template** with comparison tables for retrieval strategies
 - **Docker support** with `Dockerfile` and `docker-compose.yml` for containerized development
 - **GitHub Actions CI** with Ruff linting, format checks, pytest on Python 3.10/3.12, and README badge
 - **Integration test framework** with 13 offline tests and live test scaffolding (`tests/test_integration.py`)

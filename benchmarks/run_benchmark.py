@@ -10,8 +10,8 @@ Each strategy runs in its own isolated context:
      to demonstrate cache speed + accuracy improvement over time
 
 Usage:
-    python benchmarks/run_ablation.py --production
-    python benchmarks/run_ablation.py --production --domain us_constitution
+    python benchmarks/run_benchmark.py --production
+    python benchmarks/run_benchmark.py --production --domain us_constitution
 """
 
 from __future__ import annotations
