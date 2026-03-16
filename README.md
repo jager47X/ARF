@@ -423,7 +423,7 @@ Contributions are welcome! Please:
 
 ## License
 
-This project is licensed under MIT License
+This project is licensed under the MIT License — see [LICENSE](LICENSE) for details.
 
 ## Acknowledgments
 
