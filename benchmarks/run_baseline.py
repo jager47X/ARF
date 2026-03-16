@@ -36,7 +36,6 @@ import numpy as np
 # Add project root to path and set up services.rag import shim
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import standalone_setup  # noqa: F401
-
 from benchmarks.cost_tracker import CostTracker
 from benchmarks.metrics import compute_all_metrics, mrr
 
@@ -377,7 +376,6 @@ def print_summary(results: Dict[str, Any]) -> None:
         for domain, info in sorted(per_domain.items()):
             n = info.get("n_queries", 0)
             dm = info.get("mean_metrics", {})
-            f1_key = next((k for k in dm if "ndcg" in k), None)
             ndcg5 = dm.get("ndcg@5", "N/A")
             print(f"    {domain:<35} queries={n}  NDCG@5={ndcg5}  avg_latency={info.get('avg_latency_s', 'N/A')}s")
 

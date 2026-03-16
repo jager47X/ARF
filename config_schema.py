@@ -10,10 +10,10 @@ Usage:
 from __future__ import annotations
 
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 try:
-    from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+    from pydantic import BaseModel, ConfigDict, Field, model_validator
 except ImportError:
     print(
         "ERROR: pydantic is required for config validation. Install it with: pip install pydantic>=2.0",
