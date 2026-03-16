@@ -35,10 +35,8 @@ from pathlib import Path
 # Add project root to path and set up services.rag import shim
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import standalone_setup  # noqa: F401 — patches sys.modules for services.rag.*
-
-from benchmarks.metrics import compute_all_metrics, mrr
 from benchmarks.cost_tracker import CostTracker
-
+from benchmarks.metrics import compute_all_metrics, mrr
 
 BENCHMARK_FILE = Path(__file__).parent / "benchmark_queries.json"
 RESULTS_DIR = Path(__file__).parent / "results"
@@ -249,13 +247,13 @@ def print_summary(results: dict) -> None:
 
     mean = agg.get("mean_metrics", {})
     if mean:
-        print(f"\n  Mean Metrics:")
+        print("\n  Mean Metrics:")
         for key in sorted(mean):
             print(f"    {key:>10}: {mean[key]:.3f}")
 
     cost = agg.get("cost_summary", {})
     if cost.get("total_queries"):
-        print(f"\n  Cost Analysis:")
+        print("\n  Cost Analysis:")
         print(f"    Avg latency:        {cost.get('avg_latency_ms', 0):.0f} ms")
         print(f"    Avg cost/query:     ${cost.get('avg_cost_per_query_usd', 0):.6f}")
         print(f"    Total cost:         ${cost.get('total_cost_usd', 0):.6f}")
@@ -264,7 +262,7 @@ def print_summary(results: dict) -> None:
 
     faith = agg.get("faithfulness")
     if faith:
-        print(f"\n  Faithfulness (LLM-as-judge):")
+        print("\n  Faithfulness (LLM-as-judge):")
         print(f"    Faithfulness rate:  {faith['faithfulness_rate']:.1%}")
         print(f"    Hallucination rate: {faith['hallucination_rate']:.1%}")
         print(f"    Avg faith. score:   {faith['avg_faithfulness_score']:.3f}")
