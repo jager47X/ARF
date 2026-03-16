@@ -108,7 +108,7 @@ class CollectionConfig(BaseModel):
 
 def validate_thresholds() -> Dict[str, DomainThresholds]:
     """Validate all DOMAIN_THRESHOLDS from config.py. Returns parsed models."""
-    from config import DOMAIN_THRESHOLDS, CLIENT_CASE_THRESHOLDS
+    from config import CLIENT_CASE_THRESHOLDS, DOMAIN_THRESHOLDS
 
     results: Dict[str, DomainThresholds] = {}
     for domain, thr in DOMAIN_THRESHOLDS.items():

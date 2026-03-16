@@ -114,7 +114,7 @@ class TestFixtureDataIntegrity:
 
     def test_no_duplicate_titles(self, fixture_docs):
         titles = [d["title"] for d in fixture_docs]
-        assert len(titles) == len(set(titles)), f"Duplicate titles found"
+        assert len(titles) == len(set(titles)), "Duplicate titles found"
 
     def test_minimum_doc_count(self, fixture_docs):
         assert len(fixture_docs) >= 10, "Fixture should have at least 10 documents"

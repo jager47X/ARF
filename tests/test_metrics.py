@@ -1,16 +1,17 @@
 """Tests for retrieval evaluation metrics."""
 
-import sys
 import os
+import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from benchmarks.metrics import (
+    compute_all_metrics,
+    mrr,
+    ndcg_at_k,
     precision_at_k,
     recall_at_k,
     reciprocal_rank,
-    mrr,
-    ndcg_at_k,
-    compute_all_metrics,
 )
 
 

@@ -1,6 +1,6 @@
 import requests
 from bs4 import BeautifulSoup
-from fetch_ca_regulations_westlaw import get_headers, WESTLAW_BASE
+from fetch_ca_regulations_westlaw import WESTLAW_BASE, get_headers
 
 # Test Title 4 page
 url = f"{WESTLAW_BASE}/calregs/Title/4"

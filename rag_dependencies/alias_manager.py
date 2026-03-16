@@ -1,13 +1,14 @@
 # src/rag/alias_manager.py
 from __future__ import annotations
+
 import logging
 import re
-from typing import Any, Dict, List, Tuple, Optional
-
-import numpy as np
-import nltk
-from nltk.corpus import stopwords
 from time import perf_counter
+from typing import Any, Dict, List, Optional, Tuple
+
+import nltk
+import numpy as np
+from nltk.corpus import stopwords
 
 logger = logging.getLogger(__name__)
 
@@ -59,29 +60,29 @@ class AliasManager:
         self.alias_cache.clear()
         try:
             database = self._get_database()  # <- avoid truthiness on Database
-            
+
             # Get main collection name from config
             main_coll_name = self.config.get("main_collection_name", "us_constitution")
             alias_coll_name = self.config.get("alias_collection_name")
-            
+
             # Try main collection first (new structure with keywords array)
             coll = database[main_coll_name]
-            
+
             # Also try legacy Alias_Map collection for backward compatibility
             alias_coll = None
             if alias_coll_name and alias_coll_name in database.list_collection_names():
                 alias_coll = database[alias_coll_name]
-            
+
             n_total = n_skipped = n_title = 0
-            
+
             # Load from main collection (keywords stored in 'keywords' array)
             cur = coll.find({}, {"title": 1, "keywords": 1, "aliases": 1, "alias": 1, "embedding": 1, "vector": 1})
-            
+
             for doc in cur:
                 title = (doc.get("title") or "").strip() if isinstance(doc.get("title"), str) else None
                 if not title:
                     continue
-                
+
                 # Load keywords array (new structure)
                 keywords = doc.get("keywords", [])
                 if keywords:
@@ -89,10 +90,10 @@ class AliasManager:
                         if isinstance(kw, dict):
                             keyword = kw.get("keyword", "")
                             vec_raw = kw.get("embedding") or []
-                            
+
                             if not keyword or not vec_raw:
                                 continue
-                            
+
                             try:
                                 vec = np.array(vec_raw, dtype=float).ravel()
                                 if vec.size > 0:
@@ -106,7 +107,7 @@ class AliasManager:
                             except Exception as e:
                                 n_skipped += 1
                                 logger.debug("[ALIAS][_load_cache] skip malformed keyword vector for %r->%r: %s", keyword, title, e)
-                
+
                 # Also support legacy 'aliases' array format (backward compatibility)
                 aliases = doc.get("aliases", [])
                 if aliases and isinstance(aliases, list):
@@ -127,7 +128,7 @@ class AliasManager:
                         except Exception as e:
                             n_skipped += 1
                             logger.debug("[ALIAS][_load_cache] skip malformed vector for aliases %r->%r: %s", aliases, title, e)
-                
+
                 # Also support legacy single 'alias' field (backward compatibility)
                 if doc.get("alias") and not keywords and not aliases:
                     alias = doc.get("alias")
@@ -145,18 +146,18 @@ class AliasManager:
                         except Exception as e:
                             n_skipped += 1
                             logger.debug("[ALIAS][_load_cache] skip malformed vector for alias %r->%r: %s", alias, title, e)
-            
+
             # Also load from legacy Alias_Map collection if it exists (for backward compatibility during migration)
             if alias_coll:
                 logger.info("[ALIAS][_load_cache] Also loading from legacy Alias_Map collection")
                 cur = alias_coll.find({}, {"alias": 1, "title": 1, "vector": 1, "embedding": 1})
-                
+
                 for doc in cur:
                     n_total += 1
                     alias = doc.get("alias")
                     title = (doc.get("title") or "").strip() if isinstance(doc.get("title"), str) else None
                     vec_raw = doc.get("embedding") or doc.get("vector") or []
-                    
+
                     try:
                         vec = np.array(vec_raw, dtype=float).ravel()
                         if alias and title and vec.size > 0:

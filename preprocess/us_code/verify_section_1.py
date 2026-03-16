@@ -25,17 +25,17 @@ for section in title1_sections:
         print(f"Chapter: {section.get('chapter')} (should be just '1')")
         print(f"Section: {section.get('section')} (should be array)")
         print(f"Title: {section.get('title')}")
-        
+
         # Check structure
         if 'clauses' in section:
             clauses = section.get('clauses', [])
             print(f"\nOLD FORMAT: Has 'clauses' array with {len(clauses)} entries")
             print("   Should have 'section' array instead")
             if clauses:
-                print(f"\nFirst clause content:")
+                print("\nFirst clause content:")
                 print(json.dumps(clauses[0], indent=2))
                 text = clauses[0].get('text', '')
-                print(f"\nText preview (first 500 chars):")
+                print("\nText preview (first 500 chars):")
                 print(text[:500])
                 if text.startswith('"') and text.endswith('"'):
                     print("\nISSUE: Text has extra quotes at start/end")
@@ -44,11 +44,11 @@ for section in title1_sections:
             sec_array = section.get('section', [])
             print(f"\nNEW FORMAT: Has 'section' array with {len(sec_array)} entries")
             if sec_array:
-                print(f"\nFirst section entry:")
+                print("\nFirst section entry:")
                 print(json.dumps(sec_array[0], indent=2))
         else:
-            print(f"\nUNEXPECTED: 'section' field is not an array")
-        
+            print("\nUNEXPECTED: 'section' field is not an array")
+
         found = True
         break
 

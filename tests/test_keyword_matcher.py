@@ -1,15 +1,17 @@
 """Unit tests for KeywordMatcher — pure logic, no MongoDB required."""
 
+import os
 import re
-import pytest
 
 # ---------------------------------------------------------------------------
 # We test the static / instance helpers of KeywordMatcher without touching
 # MongoDB by building a lightweight stub that pre-populates the caches
 # that __init__ normally fills from the database.
 # ---------------------------------------------------------------------------
+import sys
 
-import sys, os
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from rag_dependencies.keyword_matcher import KeywordMatcher

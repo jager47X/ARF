@@ -3,14 +3,15 @@
 Update USCIS Policy Manual in MongoDB by comparing new JSON with current JSON
 and updating only changed documents.
 """
-import os
-import sys
-import json
-import logging
 import argparse
 import datetime
-from typing import Any, Dict, List, Tuple
+import json
+import logging
+import os
+import sys
 from pathlib import Path
+from typing import Any, Dict, List, Tuple
+
 from pymongo import MongoClient, WriteConcern
 from pymongo.errors import BulkWriteError
 
@@ -29,7 +30,7 @@ import types
 if 'backend' not in sys.modules:
     backend_mod = types.ModuleType('backend')
     sys.modules['backend'] = backend_mod
-    
+
     services_init = backend_dir / 'services' / '__init__.py'
     if services_init.exists():
         spec = importlib.util.spec_from_file_location('backend.services', services_init)
@@ -38,7 +39,7 @@ if 'backend' not in sys.modules:
             sys.modules['backend.services'] = services_mod
             spec.loader.exec_module(services_mod)
             setattr(backend_mod, 'services', services_mod)
-            
+
             rag_init = backend_dir / 'services' / 'rag' / '__init__.py'
             if rag_init.exists():
                 spec = importlib.util.spec_from_file_location('backend.services.rag', rag_init)
@@ -47,7 +48,7 @@ if 'backend' not in sys.modules:
                     sys.modules['backend.services.rag'] = rag_mod
                     spec.loader.exec_module(rag_mod)
                     setattr(services_mod, 'rag', rag_mod)
-                    
+
                     config_file = backend_dir / 'services' / 'rag' / 'config.py'
                     if config_file.exists():
                         spec = importlib.util.spec_from_file_location('backend.services.rag.config', config_file)
@@ -111,22 +112,22 @@ def check_autoupdate_enabled() -> bool:
     env_enabled = os.getenv("USCIS_AUTOUPDATE_ENABLED", "").lower() == "true"
     if env_enabled:
         return True
-    
+
     # Check AUTOUPDATE_CONFIG
     if AUTOUPDATE_CONFIG.get("enabled", False):
         return True
-    
+
     # Check collection-specific config
     if USCIS_POLICY_CONF.get("autoupdate_enabled", False):
         return True
-    
+
     return False
 
 def deep_compare_clauses(clauses1: List[Dict], clauses2: List[Dict]) -> bool:
     """Deep compare two clause arrays."""
     if len(clauses1) != len(clauses2):
         return False
-    
+
     for c1, c2 in zip(clauses1, clauses2):
         if c1.get("number") != c2.get("number"):
             return False
@@ -134,7 +135,7 @@ def deep_compare_clauses(clauses1: List[Dict], clauses2: List[Dict]) -> bool:
             return False
         if c1.get("text", "").strip() != c2.get("text", "").strip():
             return False
-    
+
     return True
 
 def compare_documents(current_doc: Dict[str, Any], new_doc: Dict[str, Any]) -> bool:
@@ -142,51 +143,51 @@ def compare_documents(current_doc: Dict[str, Any], new_doc: Dict[str, Any]) -> b
     # Compare text
     if current_doc.get("text", "").strip() != new_doc.get("text", "").strip():
         return False
-    
+
     # Compare references (sorted for comparison)
     refs1 = sorted(current_doc.get("references", []))
     refs2 = sorted(new_doc.get("references", []))
     if refs1 != refs2:
         return False
-    
+
     # Compare clauses (deep comparison)
     if not deep_compare_clauses(current_doc.get("clauses", []), new_doc.get("clauses", [])):
         return False
-    
+
     return True
 
 def find_document_changes(current_docs: List[Dict], new_docs: List[Dict]) -> Tuple[List[Dict], List[Dict], List[Dict]]:
     """
     Compare current and new documents to find changes.
-    
+
     Returns:
         Tuple of (new_documents, updated_documents, deleted_documents)
     """
     # Create title -> document maps
     current_by_title = {d.get("title", ""): d for d in current_docs if d.get("title")}
     new_by_title = {d.get("title", ""): d for d in new_docs if d.get("title")}
-    
+
     new_documents = []
     updated_documents = []
     deleted_titles = []
-    
+
     # Find new documents
     for title, new_doc in new_by_title.items():
         if title not in current_by_title:
             new_documents.append(new_doc)
-    
+
     # Find updated documents
     for title, new_doc in new_by_title.items():
         if title in current_by_title:
             current_doc = current_by_title[title]
             if not compare_documents(current_doc, new_doc):
                 updated_documents.append(new_doc)
-    
+
     # Find deleted documents
     for title in current_by_title:
         if title not in new_by_title:
             deleted_titles.append(title)
-    
+
     return new_documents, updated_documents, deleted_titles
 
 def update_mongodb(new_docs: List[Dict], updated_docs: List[Dict], deleted_titles: List[str]):
@@ -199,15 +200,15 @@ def update_mongodb(new_docs: List[Dict], updated_docs: List[Dict], deleted_title
             tls_config = {"tls": True}
         elif MONGO_URI and ("mongodb.net" in MONGO_URI or "mongodb.com" in MONGO_URI):
             tls_config = {"tls": True}
-        
+
         client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=30000, **tls_config)
         client.admin.command('ping')
-        
+
         db = client[DB_NAME]
         coll = db.get_collection(COLL_NAME, write_concern=WriteConcern(w=1))
-        
+
         now = datetime.datetime.utcnow()
-        
+
         # Insert new documents
         if new_docs:
             for doc in new_docs:
@@ -219,7 +220,7 @@ def update_mongodb(new_docs: List[Dict], updated_docs: List[Dict], deleted_title
             except BulkWriteError as bwe:
                 n = bwe.details.get("nInserted", 0)
                 logger.warning(f"BulkWriteError; inserted {n} new docs")
-        
+
         # Update modified documents
         if updated_docs:
             updated_count = 0
@@ -240,11 +241,11 @@ def update_mongodb(new_docs: List[Dict], updated_docs: List[Dict], deleted_title
                 except Exception as e:
                     logger.warning(f"Failed to update document '{doc.get('title')}': {e}")
             logger.info(f"Updated {updated_count} existing documents")
-        
+
         # Handle deleted documents (log only, don't delete)
         if deleted_titles:
             logger.warning(f"Found {len(deleted_titles)} deleted documents (not removing from MongoDB): {deleted_titles[:5]}...")
-        
+
         # Save last update timestamp
         last_check_file_path = AUTOUPDATE_CONFIG.get("last_check_file", "Data/Knowledge/.last_uscis_check")
         last_check_file = BASE_DIR / last_check_file_path
@@ -252,7 +253,7 @@ def update_mongodb(new_docs: List[Dict], updated_docs: List[Dict], deleted_title
         with open(last_check_file, 'w') as f:
             f.write(now.isoformat())
         logger.info(f"Saved last update timestamp to {last_check_file}")
-        
+
     except Exception as e:
         logger.error(f"Error updating MongoDB: {e}", exc_info=True)
         raise
@@ -266,20 +267,20 @@ def main():
     if not check_autoupdate_enabled():
         logger.info("Autoupdate is disabled. Set USCIS_AUTOUPDATE_ENABLED=true or enable in config to run updates.")
         return 0
-    
+
     logger.info("Starting USCIS Policy Manual update...")
-    
+
     # Step 1: Download HTML (if not skipped)
     if not args or not args.skip_download:
         logger.info("Step 1: Downloading HTML...")
-        from download_uscis_policy_manual import download_policy_manual, USCIS_POLICY_URL
+        from download_uscis_policy_manual import USCIS_POLICY_URL, download_policy_manual
         url = USCIS_POLICY_CONF.get("autoupdate_url", USCIS_POLICY_URL)
         if not download_policy_manual(url, HTML_PATH):
             logger.error("Failed to download HTML")
             return 1
     else:
         logger.info("Skipping download (using existing HTML)")
-    
+
     # Step 2: Convert HTML to JSON (if not skipped)
     if not args or not args.skip_convert:
         logger.info("Step 2: Converting HTML to JSON...")
@@ -287,7 +288,7 @@ def main():
         if not HTML_PATH.exists():
             logger.error(f"HTML file not found: {HTML_PATH}")
             return 1
-        
+
         new_json_data = parse_policy_manual_html(HTML_PATH)
         with open(NEW_JSON_PATH, 'w', encoding='utf-8') as f:
             json.dump(new_json_data, f, indent=2, ensure_ascii=False)
@@ -297,7 +298,7 @@ def main():
         if not NEW_JSON_PATH.exists():
             logger.error(f"New JSON file not found: {NEW_JSON_PATH}")
             return 1
-    
+
     # Step 3: Load current and new JSON
     logger.info("Step 3: Loading JSON files...")
     if not CURRENT_JSON_PATH.exists():
@@ -307,33 +308,33 @@ def main():
         with open(CURRENT_JSON_PATH, 'r', encoding='utf-8') as f:
             current_data = json.load(f)
         current_docs = current_data.get("data", {}).get("uscis_policy", {}).get("documents", [])
-    
+
     with open(NEW_JSON_PATH, 'r', encoding='utf-8') as f:
         new_data = json.load(f)
     new_docs = new_data.get("data", {}).get("uscis_policy", {}).get("documents", [])
-    
+
     logger.info(f"Current documents: {len(current_docs)}, New documents: {len(new_docs)}")
-    
+
     # Step 4: Compare and find changes
     logger.info("Step 4: Comparing documents...")
     new_documents, updated_documents, deleted_titles = find_document_changes(current_docs, new_docs)
-    
-    logger.info(f"Changes detected:")
+
+    logger.info("Changes detected:")
     logger.info(f"  - New documents: {len(new_documents)}")
     logger.info(f"  - Updated documents: {len(updated_documents)}")
     logger.info(f"  - Deleted documents: {len(deleted_titles)}")
-    
+
     # Step 5: Update MongoDB
     if new_documents or updated_documents or deleted_titles:
         logger.info("Step 5: Updating MongoDB...")
         update_mongodb(new_documents, updated_documents, deleted_titles)
-        
+
         # Replace current JSON with new JSON
         NEW_JSON_PATH.replace(CURRENT_JSON_PATH)
         logger.info(f"Replaced current JSON with new JSON: {CURRENT_JSON_PATH}")
     else:
         logger.info("No changes detected. MongoDB is up to date.")
-    
+
     logger.info("Update complete!")
     return 0
 

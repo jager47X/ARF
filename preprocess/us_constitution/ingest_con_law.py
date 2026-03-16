@@ -1,11 +1,12 @@
 # ingest_con_law.py
-import os
-import sys
+import argparse
 import json
 import logging
-import argparse
-from typing import Any, Dict, List
+import os
+import sys
 from pathlib import Path
+from typing import Any, Dict, List
+
 from pymongo import MongoClient, WriteConcern
 from pymongo.errors import BulkWriteError
 
@@ -29,7 +30,7 @@ if 'backend' not in sys.modules:
     # Create backend module
     backend_mod = types.ModuleType('backend')
     sys.modules['backend'] = backend_mod
-    
+
     # Load services
     services_init = backend_dir / 'services' / '__init__.py'
     services_mod = None
@@ -40,11 +41,11 @@ if 'backend' not in sys.modules:
             sys.modules['backend.services'] = services_mod
             spec.loader.exec_module(services_mod)
             setattr(backend_mod, 'services', services_mod)
-            
+
             # Also create 'services' module alias (for files using 'from services.rag.config')
             if 'services' not in sys.modules:
                 sys.modules['services'] = services_mod
-            
+
             # Load rag
             rag_init = backend_dir / 'services' / 'rag' / '__init__.py'
             rag_mod = None
@@ -55,10 +56,10 @@ if 'backend' not in sys.modules:
                     sys.modules['backend.services.rag'] = rag_mod
                     spec.loader.exec_module(rag_mod)
                     setattr(services_mod, 'rag', rag_mod)
-                    
+
                     # Also create 'services.rag' alias
                     sys.modules['services.rag'] = rag_mod
-                    
+
                     # Load config
                     config_file = backend_dir / 'services' / 'rag' / 'config.py'
                     if config_file.exists():
@@ -68,10 +69,10 @@ if 'backend' not in sys.modules:
                             sys.modules['backend.services.rag.config'] = config_mod
                             spec.loader.exec_module(config_mod)
                             setattr(rag_mod, 'config', config_mod)
-                            
+
                             # Also create 'services.rag.config' alias
                             sys.modules['services.rag.config'] = config_mod
-                            
+
                             # Load rag_dependencies
                             rag_deps_init = backend_dir / 'services' / 'rag' / 'rag_dependencies' / '__init__.py'
                             if rag_deps_init.exists():
@@ -81,7 +82,7 @@ if 'backend' not in sys.modules:
                                     sys.modules['backend.services.rag.rag_dependencies'] = rag_deps_mod
                                     spec.loader.exec_module(rag_deps_mod)
                                     setattr(rag_mod, 'rag_dependencies', rag_deps_mod)
-                                    
+
                                     # Also create 'services.rag.rag_dependencies' alias
                                     sys.modules['services.rag.rag_dependencies'] = rag_deps_mod
 
@@ -220,7 +221,7 @@ def generate_embeddings_for_docs_batch(embedder: LLM, docs: List[Dict[str, Any]]
     clause_texts = []
     doc_indices = []  # Track which doc each text belongs to
     clause_indices = []  # Track which clause each text belongs to (doc_idx, clause_idx)
-    
+
     for doc_idx, doc in enumerate(docs):
         # Document-level text
         doc_text_parts = []
@@ -230,12 +231,12 @@ def generate_embeddings_for_docs_batch(embedder: LLM, docs: List[Dict[str, Any]]
             doc_text_parts.append(f"Article {doc['article']}")
         if doc.get("section"):
             doc_text_parts.append(f"Section {doc['section']}")
-        
+
         doc_text = " ".join(doc_text_parts)
         if doc_text:
             doc_texts.append(doc_text)
             doc_indices.append(doc_idx)
-        
+
         # Clause-level texts
         clauses = doc.get("clauses", [])
         for clause_idx, clause in enumerate(clauses):
@@ -244,12 +245,12 @@ def generate_embeddings_for_docs_batch(embedder: LLM, docs: List[Dict[str, Any]]
                 clause_text_parts.append(clause["title"])
             if clause.get("text"):
                 clause_text_parts.append(clause["text"])
-            
+
             clause_text = " ".join(clause_text_parts)
             if clause_text:
                 clause_texts.append(clause_text)
                 clause_indices.append((doc_idx, clause_idx))
-    
+
     # Generate document embeddings in batch
     if doc_texts:
         try:
@@ -259,7 +260,7 @@ def generate_embeddings_for_docs_batch(embedder: LLM, docs: List[Dict[str, Any]]
                     docs[doc_idx]["embedding"] = doc_embeddings[i].tolist() if hasattr(doc_embeddings[i], 'tolist') else list(doc_embeddings[i])
         except Exception as e:
             logger.warning(f"Failed to generate document embeddings in batch: {e}")
-    
+
     # Generate clause embeddings in batch
     if clause_texts:
         try:
@@ -273,7 +274,7 @@ def generate_embeddings_for_docs_batch(embedder: LLM, docs: List[Dict[str, Any]]
                     docs[doc_idx]["clauses"][clause_idx]["embedding"] = clause_embeddings[i].tolist() if hasattr(clause_embeddings[i], 'tolist') else list(clause_embeddings[i])
         except Exception as e:
             logger.warning(f"Failed to generate clause embeddings in batch: {e}")
-    
+
     return docs
 
 def ingest():
@@ -314,7 +315,7 @@ def ingest():
             mode_str = "batch" if use_batch else "individual"
             logger.info(f"Generating embeddings using Voyage-3-large (1024 dimensions) in {mode_str} mode...")
             embedder = LLM(config=USC_CONF)
-            
+
             if use_batch:
                 # Process in batches to avoid memory issues
                 batch_size = 50  # Process 50 documents at a time
@@ -339,7 +340,7 @@ def ingest():
                         doc_text_parts.append(f"Article {doc['article']}")
                     if doc.get("section"):
                         doc_text_parts.append(f"Section {doc['section']}")
-                    
+
                     doc_text = " ".join(doc_text_parts)
                     if doc_text:
                         try:
@@ -348,7 +349,7 @@ def ingest():
                                 doc["embedding"] = doc_emb.tolist() if hasattr(doc_emb, 'tolist') else list(doc_emb)
                         except Exception as e:
                             logger.warning(f"Failed to generate document embedding for '{doc.get('title', 'N/A')}': {e}")
-                    
+
                     # Clause-level embeddings
                     clauses = doc.get("clauses", [])
                     for clause in clauses:
@@ -357,7 +358,7 @@ def ingest():
                             clause_text_parts.append(clause["title"])
                         if clause.get("text"):
                             clause_text_parts.append(clause["text"])
-                        
+
                         clause_text = " ".join(clause_text_parts)
                         if clause_text:
                             try:
@@ -366,9 +367,9 @@ def ingest():
                                     clause["embedding"] = clause_emb.tolist() if hasattr(clause_emb, 'tolist') else list(clause_emb)
                             except Exception as e:
                                 logger.warning(f"Failed to generate clause embedding for '{clause.get('title', 'N/A')}': {e}")
-                    
+
                     return doc
-                
+
                 with ThreadPoolExecutor(max_workers=5) as executor:
                     futures = {executor.submit(generate_embeddings_for_doc, embedder, doc): i for i, doc in enumerate(docs)}
                     for future in as_completed(futures):
@@ -379,7 +380,7 @@ def ingest():
                                 logger.info("Generated embeddings for %d/%d documents", idx + 1, len(docs))
                         except Exception as e:
                             logger.error(f"Error processing document {idx}: {e}")
-            
+
             logger.info("Completed embedding generation for all documents.")
 
         # Deduplicate by top-level title (section/article title) - only if not from-scratch
@@ -407,7 +408,7 @@ def ingest():
         # Unique across *clause titles* (multikey). Assumes each clause title is unique across the Constitution.
         coll.create_index("clauses.title", unique=True)
         logger.info("Indexes created: title (unique), (article,section), clauses.title (unique)")
-        
+
         # Add aliases as keywords with embeddings (only if embeddings were generated)
         if args and args.with_embeddings:
             use_batch = args.batch_embeddings if args else False
@@ -430,7 +431,7 @@ def add_aliases_as_keywords(coll, embedder: LLM, use_batch: bool = False):
     """
     Add aliases from alias_map as keywords with embeddings to each constitution document.
     Keywords are stored as: [{keyword: str, embedding: List[float]}, ...]
-    
+
     Args:
         coll: MongoDB collection
         embedder: LLM instance for generating embeddings
@@ -455,24 +456,24 @@ def add_aliases_as_keywords(coll, embedder: LLM, use_batch: bool = False):
         else:
             logger.error("Could not find ingest_alias_us_con_law.py. Skipping keyword addition.")
             return
-    
+
     logger.info(f"Loaded alias_map with {len(alias_map)} entries")
     logger.info(f"Alias_map keys (first 10): {list(alias_map.keys())[:10]}")
-    
+
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    
+
     # Collect all documents and their titles
     docs = list(coll.find({}))
     total_docs = len(docs)
     logger.info(f"Found {total_docs} documents in collection")
-    
+
     # Log document titles for debugging
     doc_titles = [doc.get("title", "").strip() for doc in docs if doc.get("title")]
     logger.info(f"Document titles (first 10): {doc_titles[:10]}")
-    
+
     # Create a case-insensitive lookup map for alias_map
     alias_map_lower = {k.lower(): (k, v) for k, v in alias_map.items()}
-    
+
     # Check which titles have aliases
     titles_with_aliases = []
     titles_without_aliases = []
@@ -487,45 +488,45 @@ def add_aliases_as_keywords(coll, embedder: LLM, use_batch: bool = False):
             titles_with_aliases.append(title)
         else:
             titles_without_aliases.append(title)
-    
+
     logger.info(f"Found {len(titles_with_aliases)} documents with aliases in alias_map")
     logger.info(f"Found {len(titles_without_aliases)} documents without aliases")
     if titles_without_aliases:
         logger.debug(f"Documents without aliases (first 10): {titles_without_aliases[:10]}")
-    
+
     def process_document_keywords(doc):
         """Process a single document and add its aliases as keywords"""
         title = doc.get("title", "").strip()
         if not title:
             return None
-        
+
         # Get aliases for this title from alias_map (try exact match, then case-insensitive)
         aliases = alias_map.get(title, [])
         if not aliases and title.lower() in alias_map_lower:
             # Case-insensitive fallback
             original_key, aliases = alias_map_lower[title.lower()]
             logger.debug(f"Matched '{title}' to alias_map key '{original_key}' (case-insensitive)")
-        
+
         if not aliases:
             return doc  # No aliases for this document
-        
+
         # Get existing keywords
         existing_keywords = doc.get("keywords", [])
         existing_keyword_texts = {kw.get("keyword", "").lower(): kw for kw in existing_keywords if isinstance(kw, dict)}
-        
+
         # Collect aliases that need embeddings
         aliases_to_embed = []
         for alias in aliases:
             alias_lower = alias.lower().strip()
             if not alias_lower or alias_lower == title.lower():
                 continue  # Skip empty or duplicate of title
-            
+
             # Check if keyword already exists
             if alias_lower in existing_keyword_texts:
                 continue
-            
+
             aliases_to_embed.append(alias)
-        
+
         # Generate embeddings (batch or individual based on flag)
         new_keywords = []
         if aliases_to_embed:
@@ -564,7 +565,7 @@ def add_aliases_as_keywords(coll, embedder: LLM, use_batch: bool = False):
                             })
                     except Exception as e:
                         logger.error(f"Failed to generate embedding for keyword '{alias}' in '{title}': {e}")
-        
+
         # Update document with new keywords
         if new_keywords:
             all_keywords = existing_keywords + new_keywords
@@ -575,12 +576,12 @@ def add_aliases_as_keywords(coll, embedder: LLM, use_batch: bool = False):
             logger.info(f"Added {len(new_keywords)} keywords to '{title}' (total aliases: {len(aliases)})")
         elif aliases:
             logger.debug(f"No new keywords added to '{title}' (all {len(aliases)} aliases already exist or were skipped)")
-        
+
         return doc
-    
+
     # Process all documents
     logger.info("Processing documents to add aliases as keywords...")
-    
+
     with ThreadPoolExecutor(max_workers=10) as executor:
         futures = {executor.submit(process_document_keywords, doc): i for i, doc in enumerate(docs)}
         processed = 0
@@ -598,7 +599,7 @@ def add_aliases_as_keywords(coll, embedder: LLM, use_batch: bool = False):
                 logger.error(f"Error processing document {idx} (title: {docs[idx].get('title', 'N/A')}): {e}")
                 import traceback
                 logger.error(traceback.format_exc())
-    
+
     logger.info(f"Completed processing {processed} documents for keywords ({updated} documents updated)")
 
 if __name__ == "__main__":

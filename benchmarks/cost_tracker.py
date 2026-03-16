@@ -20,7 +20,6 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-
 # Approximate pricing (USD per 1M tokens) as of 2025
 PRICING = {
     "voyage-3-large": {"input": 0.06},          # embedding

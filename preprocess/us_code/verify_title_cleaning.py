@@ -19,7 +19,7 @@ import types
 if 'backend' not in sys.modules:
     backend_mod = types.ModuleType('backend')
     sys.modules['backend'] = backend_mod
-    
+
     services_init = backend_dir / 'services' / '__init__.py'
     if services_init.exists():
         spec = importlib.util.spec_from_file_location('backend.services', services_init)
@@ -29,7 +29,7 @@ if 'backend' not in sys.modules:
             spec.loader.exec_module(services_mod)
             setattr(backend_mod, 'services', services_mod)
             sys.modules['services'] = services_mod
-            
+
             rag_init = backend_dir / 'services' / 'rag' / '__init__.py'
             if rag_init.exists():
                 spec = importlib.util.spec_from_file_location('backend.services.rag', rag_init)
@@ -39,7 +39,7 @@ if 'backend' not in sys.modules:
                     spec.loader.exec_module(rag_mod)
                     setattr(services_mod, 'rag', rag_mod)
                     sys.modules['services.rag'] = rag_mod
-                    
+
                     config_file = backend_dir / 'services' / 'rag' / 'config.py'
                     if config_file.exists():
                         spec = importlib.util.spec_from_file_location('backend.services.rag.config', config_file)
@@ -52,6 +52,7 @@ if 'backend' not in sys.modules:
 
 # Import config
 import backend.services.rag.config as config_module
+
 config_module.load_environment("local")
 
 from pymongo import MongoClient
@@ -82,14 +83,14 @@ max_check = 1000
 
 for doc in coll.find({}).limit(max_check):
     samples_checked += 1
-    
+
     # Check main title
     title = doc.get("title", "")
     if "--" in title:
         issues.append(f"Document title has '--': '{title[:80]}...'")
     if "." in title:
         issues.append(f"Document title has '.': '{title[:80]}...'")
-    
+
     # Check clause titles
     for clause in doc.get("clauses", []):
         clause_title = clause.get("title", "")

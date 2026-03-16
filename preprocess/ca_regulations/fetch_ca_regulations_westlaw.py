@@ -3,20 +3,21 @@
 Fetch comprehensive California Code of Regulations from Westlaw.
 Downloads all Titles (1-28) from https://shared-govt.westlaw.com/calregs/
 """
-import os
-import sys
+import argparse
 import json
 import logging
+import os
+import re
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+from threading import Lock
+from typing import Any, Dict, List, Optional
+from urllib.parse import parse_qs, urljoin, urlparse
+
 import requests
 from bs4 import BeautifulSoup
-from pathlib import Path
-from typing import Any, Dict, List, Optional
-import time
-import re
-from urllib.parse import urljoin, urlparse, parse_qs
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from threading import Lock
-import argparse
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("fetch_ca_regulations_westlaw")
@@ -66,7 +67,7 @@ def get_headers(referer: str = None) -> Dict[str, str]:
     """Get HTTP headers for requests. Browser-like to avoid blocking."""
     if referer is None:
         referer = WESTLAW_INDEX
-    
+
     return {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
@@ -87,7 +88,7 @@ def fetch_with_retry(url: str, session: Optional[requests.Session] = None, retri
     if session is None:
         session = requests.Session()
         session.headers.update(get_headers())
-    
+
     attempt = 0
     while attempt < retries:
         # Rate limiting
@@ -97,16 +98,16 @@ def fetch_with_retry(url: str, session: Optional[requests.Session] = None, retri
             if time_since_last < min_delay:
                 time.sleep(min_delay - time_since_last)
             last_request_time[0] = time.time()
-        
+
         try:
             response = session.get(url, timeout=(30, 60))
-            
+
             # Check for authentication required
             if response.status_code == 401 or response.status_code == 403:
                 logger.error(f"Authentication required for {url}. Status: {response.status_code}")
                 logger.error("Westlaw may require a subscription or login. Please check if you have access.")
                 return None
-            
+
             # Check for rate limiting
             if response.status_code == 429:
                 wait_time = (2 ** attempt) * 10
@@ -114,10 +115,10 @@ def fetch_with_retry(url: str, session: Optional[requests.Session] = None, retri
                 time.sleep(wait_time)
                 attempt += 1
                 continue
-            
+
             response.raise_for_status()
             return response
-            
+
         except requests.exceptions.Timeout as e:
             wait_time = min((2 ** attempt) * 5, 300)
             logger.warning(f"Timeout on attempt {attempt + 1} for {url}. Retrying in {wait_time}s...")
@@ -143,7 +144,7 @@ def fetch_with_retry(url: str, session: Optional[requests.Session] = None, retri
             logger.warning(f"Attempt {attempt + 1} failed for {url}: {e}. Retrying in {wait_time}s...")
             time.sleep(wait_time)
             attempt += 1
-    
+
     logger.error(f"Failed to fetch {url} after {retries} attempts")
     return None
 
@@ -152,15 +153,15 @@ def extract_regulation_text(soup: BeautifulSoup) -> str:
     # Remove navigation, headers, footers
     for element in soup.find_all(['nav', 'header', 'footer', 'aside']):
         element.decompose()
-    
+
     # Remove script and style tags
     for element in soup.find_all(['script', 'style']):
         element.decompose()
-    
+
     # Remove common UI elements
     for element in soup.find_all(class_=re.compile(r'nav|menu|header|footer|sidebar|breadcrumb|search|filter', re.I)):
         element.decompose()
-    
+
     # Try to find main content area
     content_selectors = [
         'div.main-content',
@@ -171,7 +172,7 @@ def extract_regulation_text(soup: BeautifulSoup) -> str:
         'div[class*="content"]',
         'div[class*="regulation"]'
     ]
-    
+
     content = None
     for selector in content_selectors:
         candidates = soup.select(selector)
@@ -182,20 +183,20 @@ def extract_regulation_text(soup: BeautifulSoup) -> str:
                 break
         if content:
             break
-    
+
     if not content:
         # Fallback: get body text
         body = soup.find('body')
         if body:
             content = body
-    
+
     if content:
         text = content.get_text(separator='\n', strip=True)
         # Clean up excessive whitespace
         text = re.sub(r'\n{3,}', '\n\n', text)
         text = re.sub(r'[ \t]+', ' ', text)
         return text.strip()
-    
+
     return ""
 
 def get_title_url_from_index(title_num: int, session: Optional[requests.Session] = None) -> Optional[str]:
@@ -203,77 +204,77 @@ def get_title_url_from_index(title_num: int, session: Optional[requests.Session]
     if session is None:
         session = requests.Session()
         session.headers.update(get_headers())
-    
+
     response = fetch_with_retry(WESTLAW_INDEX, session=session)
     if not response:
         return None
-    
+
     soup = BeautifulSoup(response.content, 'html.parser')
-    
+
     # Look for the link to this specific title
     for link in soup.find_all('a', href=True):
         href = link.get('href', '')
         text = link.get_text(strip=True)
-        
+
         # Check if this is the title we're looking for
         if f"Title {title_num}" in text or f"Title {title_num}." in text:
             full_url = urljoin(WESTLAW_BASE, href)
             return full_url
-    
+
     return None
 
 def fetch_title_regulations(title_num: int, title_name: str, session: Optional[requests.Session] = None) -> List[Dict[str, Any]]:
     """Fetch all regulations for a specific title."""
     logger.info(f"Fetching Title {title_num}: {title_name}...")
-    
+
     if session is None:
         session = requests.Session()
         session.headers.update(get_headers())
-    
+
     regulations = []
-    
+
     # Get the correct title URL from index
     title_url = get_title_url_from_index(title_num, session)
     if not title_url:
         logger.warning(f"Could not find URL for Title {title_num} from index")
         return regulations
-    
+
     # Fetch the title page
     response = fetch_with_retry(title_url, session=session)
     if not response:
         logger.warning(f"Could not access Title {title_num} at {title_url}")
         return regulations
-    
+
     soup = BeautifulSoup(response.content, 'html.parser')
-    
+
     # Look for links to divisions, chapters, articles, or sections
     regulation_links = []
     for link in soup.find_all('a', href=True):
         href = link.get('href', '')
         text = link.get_text(strip=True)
-        
+
         # Check if this looks like a regulation link (not navigation)
         if href.startswith('/calregs/') and not any(skip in href.lower() for skip in ['index', 'home', 'browse/home']):
             full_url = urljoin(WESTLAW_BASE, href)
             # Only include if it has meaningful text
             if text and len(text.strip()) > 3:
                 regulation_links.append((full_url, text.strip()))
-    
+
     logger.info(f"Found {len(regulation_links)} potential regulation links for Title {title_num}")
-    
+
     # If we found links, fetch them; otherwise extract from current page
     if regulation_links:
         # Limit to avoid overwhelming (can increase later)
         for reg_url, reg_title in regulation_links[:200]:
             time.sleep(1.0)  # Rate limiting
-            
+
             reg_response = fetch_with_retry(reg_url, session=session)
             if not reg_response:
                 continue
-            
+
             reg_soup = BeautifulSoup(reg_response.content, 'html.parser')
             reg_text = extract_regulation_text(reg_soup)
-            
+
             # Clean up the text - remove navigation content
             if reg_text:
                 # Remove common navigation patterns
@@ -286,44 +287,44 @@ def fetch_title_regulations(title_num: int, title_name: str, session: Optional[r
                         continue
                     if len(line) > 5:  # Only keep substantial lines
                         cleaned_lines.append(line)
-                
+
                 reg_text = '\n'.join(cleaned_lines)
-            
+
             if reg_text and len(reg_text) > 100:  # Must have substantial content
                 # Extract structure from URL or title
                 division = ""
                 chapter = ""
                 article = ""
                 section = ""
-                
+
                 # Try to parse structure from URL
                 url_lower = reg_url.lower()
                 if 'division' in url_lower:
                     match = re.search(r'division[\/-]?(\d+)', url_lower, re.I)
                     if match:
                         division = f"Division {match.group(1)}"
-                
+
                 if 'chapter' in url_lower:
                     match = re.search(r'chapter[\/-]?(\d+)', url_lower, re.I)
                     if match:
                         chapter = f"Chapter {match.group(1)}"
-                
+
                 if 'article' in url_lower:
                     match = re.search(r'article[\/-]?(\d+)', url_lower, re.I)
                     if match:
                         article = f"Article {match.group(1)}"
-                
+
                 if 'section' in url_lower:
                     match = re.search(r'section[\/-]?(\d+)', url_lower, re.I)
                     if match:
                         section = f"Section {match.group(1)}"
-                
+
                 # Use the link text as title, or construct from structure
                 reg_display_title = reg_title
                 if not reg_display_title or len(reg_display_title) < 5:
                     parts = [p for p in [division, chapter, article, section] if p]
                     reg_display_title = ' - '.join(parts) if parts else f"Title {title_num}"
-                
+
                 regulations.append({
                     "article": f"Title {title_num}",
                     "part": title_name,
@@ -348,7 +349,7 @@ def fetch_title_regulations(title_num: int, title_name: str, session: Optional[r
                     continue
                 if len(line) > 5:
                     cleaned_lines.append(line)
-            
+
             cleaned_content = '\n'.join(cleaned_lines)
             if cleaned_content and len(cleaned_content) > 100:
                 regulations.append({
@@ -362,7 +363,7 @@ def fetch_title_regulations(title_num: int, title_name: str, session: Optional[r
                         "text": cleaned_content
                     }]
                 })
-    
+
     logger.info(f"Found {len(regulations)} regulations for Title {title_num}")
     return regulations
 
@@ -371,36 +372,36 @@ def fetch_all_regulations(num_workers: int = 2, min_delay: float = 1.0) -> List[
     logger.info("Starting to fetch California Code of Regulations from Westlaw...")
     logger.info(f"Using {num_workers} workers with {min_delay}s minimum delay")
     logger.warning("Note: Westlaw may require authentication. If you get 401/403 errors, you may need a subscription.")
-    
+
     all_regulations = []
     session = requests.Session()
     session.headers.update(get_headers())
-    
+
     # First, try to access the index page to establish session
     logger.info("Accessing Westlaw index page...")
     index_response = fetch_with_retry(WESTLAW_INDEX, session=session)
     if not index_response:
         logger.error("Could not access Westlaw index page. Check if authentication is required.")
         return all_regulations
-    
+
     logger.info("Successfully accessed Westlaw. Proceeding to fetch regulations...")
-    
+
     # Process titles in parallel
     processed_count = [0]
-    
+
     def update_progress():
         with progress_lock:
             processed_count[0] += 1
             current = processed_count[0]
             if current % 5 == 0 or current == len(CA_REG_TITLES):
                 logger.info(f"Processed {current}/{len(CA_REG_TITLES)} titles")
-    
+
     with ThreadPoolExecutor(max_workers=num_workers) as executor:
         future_to_title = {
             executor.submit(fetch_title_regulations, title_num, title_name, session): (title_num, title_name)
             for title_num, title_name in CA_REG_TITLES.items()
         }
-        
+
         for future in as_completed(future_to_title):
             title_num, title_name = future_to_title[future]
             try:
@@ -410,7 +411,7 @@ def fetch_all_regulations(num_workers: int = 2, min_delay: float = 1.0) -> List[
             except Exception as e:
                 logger.error(f"Error processing Title {title_num}: {e}")
                 update_progress()
-    
+
     logger.info(f"Total regulations fetched: {len(all_regulations)}")
     return all_regulations
 
@@ -424,11 +425,11 @@ def save_regulations(regulations: List[Dict[str, Any]], output_path: Path):
                 }
             }
         }
-        
+
         temp_path = output_path.with_suffix('.json.tmp')
         with open(temp_path, "w", encoding="utf-8") as f:
             json.dump(output_data, f, indent=2, ensure_ascii=False)
-        
+
         temp_path.replace(output_path)
         file_size = output_path.stat().st_size / (1024 * 1024)
         logger.info(f"Saved {len(regulations)} regulations to {output_path} ({file_size:.2f} MB)")
@@ -449,12 +450,12 @@ def main():
         help="Minimum delay between requests in seconds (default: 1.0)"
     )
     args = parser.parse_args()
-    
+
     script_dir = Path(__file__).resolve().parent
     base_dir = script_dir.parent.parent
     output_path = base_dir / "Data" / "Knowledge" / "ca_regulations.json"
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    
+
     logger.info("=" * 60)
     logger.info("California Code of Regulations Fetcher (Westlaw)")
     logger.info("=" * 60)
@@ -463,19 +464,19 @@ def main():
     logger.warning("  - Authentication credentials")
     logger.warning("  - Compliance with terms of service")
     logger.warning("=" * 60)
-    
+
     start_time = time.time()
-    
+
     regulations = fetch_all_regulations(num_workers=args.workers, min_delay=args.delay)
-    
+
     if regulations:
         save_regulations(regulations, output_path)
-        
+
         elapsed_time = time.time() - start_time
         hours = int(elapsed_time // 3600)
         minutes = int((elapsed_time % 3600) // 60)
         seconds = int(elapsed_time % 60)
-        
+
         logger.info("=" * 60)
         logger.info("Fetch complete!")
         logger.info(f"Total regulations: {len(regulations)}")

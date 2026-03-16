@@ -1,14 +1,16 @@
 """Tests for Pydantic config schema validation."""
 
-import pytest
-import sys
 import os
+import sys
+
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 try:
     from pydantic import ValidationError
-    from config_schema import DomainThresholds, CollectionConfig, FieldMapping
+
+    from config_schema import CollectionConfig, DomainThresholds, FieldMapping
     _has_pydantic = True
 except ImportError:
     _has_pydantic = False

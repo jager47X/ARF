@@ -1,13 +1,13 @@
 # services/rag_dependencies/query_manager.py
 from __future__ import annotations
 
-import logging
-from typing import Any, Dict, List, Optional, Tuple, Union, Sequence
 import datetime
+import logging
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+
 import numpy as np
 import tiktoken
 from bson import ObjectId
-
 from services.rag.config import EMBEDDING_MODEL
 from services.rag.rag_dependencies.ai_service import LLM
 from services.rag.rag_dependencies.mongo_manager import MongoManager
@@ -65,7 +65,7 @@ class QueryManager:
         """
         # Normalize query at the start to ensure consistency
         norm_query = db.normalize_query(query)
-        
+
         # 1) Exact match by 'query' (case-insensitive)
         existing = db.find_query_doc_ci(norm_query)
         if existing and existing.get("embedding") is not None:
@@ -88,10 +88,10 @@ class QueryManager:
             try:
                 # Generate embedding for new query (store it for potential reuse)
                 generated_emb = self.get_embedding(norm_query)
-                
+
                 # Use MongoDB Atlas Vector Search to find similar queries
                 from services.rag.rag_dependencies.vector_search import vector_search_by_filter
-                
+
                 results = vector_search_by_filter(
                     collection=self.query_collection,
                     query_vector=generated_emb,
@@ -100,11 +100,11 @@ class QueryManager:
                     vector_index_name="vector_index",
                     vector_field="embedding"
                 )
-                
+
                 if results:
                     best_doc = results[0]
                     best_sim = float(best_doc.get("score", 0.0))
-                    
+
                     logger.info("[EMB][VECTOR] best_sim=%.3f thr=%.3f", best_sim, self.QUERY_SEARCH_THR)
                     if best_sim >= self.QUERY_SEARCH_THR:
                         logger.info("[EMB][SEM] %r ≈ %r (%.3f)", norm_query, best_doc.get("query"), best_sim)
@@ -112,7 +112,7 @@ class QueryManager:
                         emb = best_doc.get("embedding")
                         if emb:
                             return np.array(emb, dtype=np.float32).ravel(), True
-                
+
             except Exception as e:
                 logger.info("[EMB][VECTOR] Vector search fallback failed: %s", e)
 
@@ -127,12 +127,6 @@ class QueryManager:
         logger.info("[EMB][NEW] %r stored", norm_query)
         return emb, False
 
-
-    # ---------------- Rephrase/link ----------------
-    def update_query_rephrased_ref(self, db: MongoManager, original: str, rephrased: str):
-        orig_n = db.normalize_query(original)
-        reph_n = db.normalize_query(rephrased)
-        return db.link_rephrased(orig_n, reph_n)
 
     # ---------------- insights/Results (pass-through to MongoManager) ----------------
 
@@ -192,9 +186,9 @@ class QueryManager:
         """
         try:
             db.update_query_with_insight(
-                query, 
-                text, 
-                index, 
+                query,
+                text,
+                index,
                 language=language,
                 insight_en=insight_en,
                 insight_es=insight_es
@@ -289,7 +283,7 @@ class QueryManager:
         except Exception:
             logger.exception("[QM][REPHRASE][CHK] failed for %r", current_text)
             return False
-        
+
 
     def search_similar(
         self,
@@ -300,10 +294,10 @@ class QueryManager:
     ) -> List[tuple[Dict[str, float]]]:
         """
         Search similar cases using MongoDB Atlas Vector Search.
-        
+
         Returns: List of 1-tuples where each tuple is a dict mapping {title: score_float}
                 e.g., [ ({"CASE-2025-0001": 0.873},), ({"CASE-2025-0007": 0.811},) ]
-        
+
         Note: This now uses MongoDB Atlas Vector Search instead of brute-force cosine similarity.
         """
 
@@ -311,7 +305,7 @@ class QueryManager:
         if vec is None:
             logger.info("[QM][find] no embedding returned for %r; skipping", getattr(self, "_short", lambda s: s)(cleaned_query))
             return []
-        
+
         # --- normalize mixed input: docs vs titles ---
         want_titles: List[str] = []
         for it in (titles or []):
@@ -332,16 +326,16 @@ class QueryManager:
             # Use MongoDB Atlas Vector Search with title filter
             # Build filter to only search within the specified titles
             title_filter = {"title": {"$in": want_titles}}
-            
+
             # Perform vector search on the cases collection
             from services.rag.rag_dependencies.vector_search import vector_search_by_filter
-            
+
             # Get the collection - try main or cases depending on context
             collection = getattr(db, 'cases', None) or getattr(db, 'main', None)
             if collection is None:
                 logger.warning("[QM][find] No collection available for vector search")
                 return []
-            
+
             # Execute vector search with filter
             results = vector_search_by_filter(
                 collection=collection,
@@ -351,7 +345,7 @@ class QueryManager:
                 vector_index_name="vector_index",
                 vector_field="embedding"
             )
-            
+
             # Convert results to expected format
             pairs: List[Tuple[str, float]] = []
             for doc in results:
@@ -359,7 +353,7 @@ class QueryManager:
                 score = float(doc.get("score", 0.0))
                 if title:
                     pairs.append((title, score))
-            
+
             if pairs:
                 scores = np.array([s for (_t, s) in pairs], dtype=float)
                 logger.info(
@@ -374,26 +368,26 @@ class QueryManager:
             # --- final shape: List[tuple[Dict[str, float]]]
             out: List[tuple[Dict[str, float]]] = [({title: score},) for title, score in pairs]
             return out
-            
+
         except Exception as e:
             logger.exception("[QM][find][VECTOR] Vector search failed: %s", e)
             # Fallback: return empty results
             return []
 
     # ============ CLIENT CASE CACHING (High-Confidence Results) ============
-    
+
     def store_case_query_pairs(
-        self, 
-        db: MongoManager, 
-        query: str, 
-        case_results: List[Tuple[dict, float]], 
+        self,
+        db: MongoManager,
+        query: str,
+        case_results: List[Tuple[dict, float]],
         searched_case_ids: Optional[List[str]] = None,
         min_score: float = 0.90
     ) -> None:
         """
         Store high-confidence case results (score >= min_score) as cached pairs for the query.
         Also stores the ObjectIds of cases that were searched (the "search range").
-        
+
         Args:
             db: MongoManager instance
             query: User query text
@@ -405,14 +399,14 @@ class QueryManager:
         if not query or not query.strip():
             logger.warning("[QM][CASE_CACHE] Skipping storage - empty query")
             return
-        
+
         norm = db.normalize_query(query)
-        
+
         # Ensure the query document exists with the query field set (required for unique index)
         # This prevents duplicate key errors when query field is null
         # IMPORTANT: _ensure_query_doc will find and update existing documents from track_query_usage
         db._ensure_query_doc(norm)
-        
+
         # Always store the search range first (even if no results)
         # This enables incremental search on subsequent queries
         # CRITICAL: Use $set to preserve ALL existing fields from track_query_usage (avg_relevance_score, language, searched_datetime, etc.)
@@ -425,7 +419,7 @@ class QueryManager:
                     has_analytics = any(key in existing_doc for key in ["avg_relevance_score", "language", "searched_datetime"])
                     if has_analytics:
                         logger.info("[QM][CASE_CACHE][RANGE] Found existing document with analytics fields - will merge cache fields")
-                
+
                 # Use query (normalized) as filter to match _ensure_query_doc behavior
                 # This ensures we're updating the same document that was created
                 # Using $set preserves all existing fields (from track_query_usage) while adding incremental cache fields
@@ -442,7 +436,7 @@ class QueryManager:
                     },
                     upsert=False  # Don't upsert - document should already exist from _ensure_query_doc or track_query_usage
                 )
-                
+
                 # Verify merge succeeded
                 if result.modified_count > 0:
                     verify_doc = db.query.find_one({"query": norm})
@@ -455,22 +449,22 @@ class QueryManager:
                             logger.debug("[QM][CASE_CACHE][RANGE] Document has cache fields (analytics may be added later)")
                 elif existing_doc:
                     logger.warning("[QM][CASE_CACHE][RANGE] Document exists but update had no effect - this may indicate a merge issue")
-                logger.info("[QM][CASE_CACHE][RANGE] Stored search range: %d case IDs for query: %r", 
+                logger.info("[QM][CASE_CACHE][RANGE] Stored search range: %d case IDs for query: %r",
                            len(searched_case_ids), query)
             except Exception:
                 logger.exception("[QM][CASE_CACHE][RANGE] Failed to store search range for query: %r", query)
-        
+
         # Store high-confidence results if any
         if not case_results:
             logger.info("[QM][CASE_CACHE] No results to cache, but search range stored")
             return
-        
+
         high_conf_cases = [(case, score) for case, score in case_results if score >= min_score]
-        
+
         if not high_conf_cases:
             logger.info("[QM][CASE_CACHE] No high-confidence results (>= %.2f) to cache for query: %r, but search range stored", min_score, query)
             return
-        
+
         # Store each high-confidence case as a result
         # Get collection_key from config to identify which collection these results belong to
         collection_key = self.config.get("collection_key")
@@ -481,25 +475,25 @@ class QueryManager:
                 case_title = case_doc.get("title", "N/A")
                 db.update_query_with_result(norm, (case_doc, score), collection_key=collection_key)
                 stored_count += 1
-                logger.info("[QM][CASE_CACHE][RESULT] Stored: %s (score: %.3f, id: %s)", 
+                logger.info("[QM][CASE_CACHE][RESULT] Stored: %s (score: %.3f, id: %s)",
                            case_title[:50], score, case_id[:12])
             except Exception as e:
-                logger.exception("[QM][CASE_CACHE] Failed to cache case %s for query: %r - %s", 
+                logger.exception("[QM][CASE_CACHE] Failed to cache case %s for query: %r - %s",
                                case_doc.get("title", "Unknown"), query, e)
-        
-        logger.info("[QM][CASE_CACHE] Successfully stored %d/%d high-confidence cases + search range for query: %r", 
+
+        logger.info("[QM][CASE_CACHE] Successfully stored %d/%d high-confidence cases + search range for query: %r",
                    stored_count, len(high_conf_cases), query)
-    
+
     def find_cached_similar_query(self, db: MongoManager, query: str, collection) -> Optional[Dict[str, Any]]:
         """
         Find a similar cached query using vector search on the query collection.
         Uses the query_search threshold from config.
-        
+
         Args:
             db: MongoManager instance
             query: User query text
             collection: MongoDB collection to search
-        
+
         Returns:
             Cached query document if found, None otherwise
         """
@@ -508,10 +502,10 @@ class QueryManager:
             vec = self.get_embedding(query)
             if vec is None:
                 return None
-            
+
             # Use vector search to find similar queries
             from services.rag.rag_dependencies.vector_search import vector_search_by_filter
-            
+
             results = vector_search_by_filter(
                 collection=collection,
                 query_vector=vec,
@@ -520,18 +514,18 @@ class QueryManager:
                 vector_index_name="vector_index",  # Correct parameter name
                 vector_field="embedding"
             )
-            
+
             if not results:
                 return None
-            
+
             # Check if similarity meets query_search threshold
             top_result = results[0]
             score = top_result.get("score", 0.0)
-            
+
             # FIX: Increase threshold to 0.85 to prevent unrelated queries from returning cached results
             # Also require minimum similarity to ensure queries are actually related
             min_similarity_threshold = max(self.QUERY_SEARCH_THR, 0.85)
-            
+
             if score >= min_similarity_threshold:
                 # Fetch full document by _id to get all fields including query and query_norm
                 doc_id = top_result.get("_id")
@@ -541,91 +535,91 @@ class QueryManager:
                         # Add score to full document for consistency
                         full_doc["score"] = score
                         similar_query = full_doc.get("query") or full_doc.get("query_norm") or "unknown"
-                        logger.info("[QM][SIMILAR_QUERY] Found similar cached query (score=%.3f): %r -> %r", 
+                        logger.info("[QM][SIMILAR_QUERY] Found similar cached query (score=%.3f): %r -> %r",
                                    score, query, similar_query)
                         return full_doc
                     else:
                         logger.warning("[QM][SIMILAR_QUERY] Found similar query by vector search but document not found by _id: %s", doc_id)
                         # Fallback to partial result
                         similar_query = top_result.get("query") or top_result.get("query_norm") or "unknown"
-                        logger.info("[QM][SIMILAR_QUERY] Found similar cached query (score=%.3f): %r -> %r", 
+                        logger.info("[QM][SIMILAR_QUERY] Found similar cached query (score=%.3f): %r -> %r",
                                    score, query, similar_query)
                         return top_result
                 else:
                     # No _id in result, use partial result
                     similar_query = top_result.get("query") or top_result.get("query_norm") or "unknown"
-                    logger.info("[QM][SIMILAR_QUERY] Found similar cached query (score=%.3f): %r -> %r", 
+                    logger.info("[QM][SIMILAR_QUERY] Found similar cached query (score=%.3f): %r -> %r",
                                score, query, similar_query)
                     return top_result
             else:
-                logger.info("[QM][SIMILAR_QUERY] No similar query above threshold (%.3f < %.3f)", 
+                logger.info("[QM][SIMILAR_QUERY] No similar query above threshold (%.3f < %.3f)",
                            score, min_similarity_threshold)
                 return None
-                
+
         except Exception as e:
             logger.exception("[QM][SIMILAR_QUERY] Failed to find similar query: %s", e)
             return None
-    
+
     def get_cached_case_titles(self, cached_query_doc: Dict[str, Any]) -> List[str]:
         """
         Extract case titles from a cached query document.
-        
+
         Args:
             cached_query_doc: Query document from MongoDB
-        
+
         Returns:
             List of case titles
         """
         case_titles = []
         results = cached_query_doc.get("results", [])
-        
+
         for result in results:
             if isinstance(result, dict):
                 title = result.get("title")
                 if title:
                     case_titles.append(title)
-        
+
         logger.info("[QM][CACHED_TITLES] Extracted %d case titles from cached query", len(case_titles))
         return case_titles
-    
+
     def get_cached_search_range(self, cached_query_doc: Dict[str, Any]) -> List[str]:
         """
         Extract the search range (ObjectIds) from a cached query document.
-        
+
         Args:
             cached_query_doc: Query document from MongoDB
-        
+
         Returns:
             List of ObjectIds (as strings) that were previously searched
         """
         search_range = cached_query_doc.get("searched_case_ids", [])
         logger.info("[QM][CACHED_RANGE] Extracted search range: %d case IDs", len(search_range))
         return search_range
-    
+
     def identify_new_cases(
-        self, 
-        current_case_ids: List[str], 
+        self,
+        current_case_ids: List[str],
         cached_case_ids: List[str]
     ) -> tuple[List[str], List[str], List[str]]:
         """
         Identify new, removed, and existing cases between current and cached ranges.
-        
+
         Args:
             current_case_ids: ObjectIds of current visible cases
             cached_case_ids: ObjectIds from previous search
-        
+
         Returns:
             Tuple of (new_case_ids, removed_case_ids, existing_case_ids)
         """
         current_set = set(current_case_ids)
         cached_set = set(cached_case_ids)
-        
+
         new_ids = list(current_set - cached_set)  # In current but not in cache
         removed_ids = list(cached_set - current_set)  # In cache but not in current
         existing_ids = list(current_set & cached_set)  # In both
-        
+
         logger.info("[QM][RANGE_DIFF] Current: %d, Cached: %d | New: %d, Removed: %d, Existing: %d",
                    len(current_case_ids), len(cached_case_ids),
                    len(new_ids), len(removed_ids), len(existing_ids))
-        
+
         return new_ids, removed_ids, existing_ids

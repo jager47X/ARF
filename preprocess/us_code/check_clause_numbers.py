@@ -26,7 +26,7 @@ for i, entry in enumerate(entries[:1000]):
         for j, sec in enumerate(sections[:5]):  # Show first 5
             text_preview = sec.get('text', '')[:100]
             print(f"    [{j}] number: '{sec.get('number')}', text: '{text_preview}...'")
-        
+
         if found_examples >= 3:
             break
 

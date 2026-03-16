@@ -3,13 +3,14 @@
 Direct ingestion script - inserts US Code JSON data exactly as-is into MongoDB.
 No transformations, no normalization, no grouping.
 """
-import os
-import sys
+import argparse
 import json
 import logging
-import argparse
+import os
+import sys
 from pathlib import Path
 from typing import Any, Dict, List
+
 from pymongo import MongoClient, WriteConcern
 from pymongo.errors import BulkWriteError
 
@@ -30,7 +31,7 @@ if 'backend' not in sys.modules:
     # Create backend module
     backend_mod = types.ModuleType('backend')
     sys.modules['backend'] = backend_mod
-    
+
     # Load services
     services_init = backend_dir / 'services' / '__init__.py'
     services_mod = None
@@ -41,11 +42,11 @@ if 'backend' not in sys.modules:
             sys.modules['backend.services'] = services_mod
             spec.loader.exec_module(services_mod)
             setattr(backend_mod, 'services', services_mod)
-            
+
             # Also create 'services' module alias
             if 'services' not in sys.modules:
                 sys.modules['services'] = services_mod
-            
+
             # Load rag
             rag_init = backend_dir / 'services' / 'rag' / '__init__.py'
             rag_mod = None
@@ -57,7 +58,7 @@ if 'backend' not in sys.modules:
                     spec.loader.exec_module(rag_mod)
                     setattr(services_mod, 'rag', rag_mod)
                     sys.modules['services.rag'] = rag_mod
-                    
+
                     # Load config
                     config_file = backend_dir / 'services' / 'rag' / 'config.py'
                     if config_file.exists():
@@ -99,7 +100,7 @@ if env_override:
     import os
     MONGO_URI = os.getenv("MONGO_URI")
     if not MONGO_URI:
-        raise ValueError(f"MONGO_URI not found")
+        raise ValueError("MONGO_URI not found")
 else:
     import backend.services.rag.config as config_module
     MONGO_URI = config_module.MONGO_URI
@@ -132,16 +133,16 @@ def ingest():
             tls_config = {"tls": True}
         elif MONGO_URI and ("mongodb.net" in MONGO_URI or "mongodb.com" in MONGO_URI):
             tls_config = {"tls": True}
-        
+
         client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=30000, **tls_config)
-        
+
         try:
             client.admin.command('ping')
             logger.info("MongoDB connection test successful.")
         except Exception as e:
             logger.error(f"MongoDB connection test failed: {e}")
             raise
-        
+
         db = client[DB_NAME]
         coll = db.get_collection(COLL_NAME, write_concern=WriteConcern(w=0))
         logger.info("Connected to MongoDB (w=0).")
@@ -150,17 +151,17 @@ def ingest():
         data = load_json(US_CODE_DOCUMENT_PATH)
         if not data:
             return
-        
+
         # Get titles array directly from JSON structure
         us_code_data = data.get("data", {}).get("united_states_code", {})
         titles = us_code_data.get("titles", [])
-        
+
         if not titles:
             logger.warning("No 'titles' found in JSON.")
             return
-        
+
         logger.info("Found %d titles in JSON. Inserting exactly as-is (one by one)...", len(titles))
-        
+
         # Insert documents exactly as they are in JSON, one by one to handle large documents
         inserted_count = 0
         failed_count = 0
@@ -173,9 +174,9 @@ def ingest():
             except Exception as e:
                 failed_count += 1
                 logger.warning("Failed to insert document %d: %s", i + 1, str(e)[:100])
-        
+
         logger.info("Inserted %d documents. Failed: %d", inserted_count, failed_count)
-        
+
         # Create basic indexes
         try:
             coll.create_index("title", unique=False)

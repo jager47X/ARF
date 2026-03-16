@@ -1,20 +1,20 @@
-import os
-import re
-import logging
 import datetime
 import hashlib
-import numpy as np
-import tiktoken
-from openai import OpenAI
+import logging
+import os
+import re
 import sys
 import time
 from collections import deque
 from threading import Lock
-
 from typing import Optional
 
+import numpy as np
+import tiktoken
+from openai import OpenAI
+
 # Import from services.rag.config
-from services.rag.config import OPENAI_API_KEY, VOYAGE_API_KEY, EMBEDDING_MODEL, REASONINGMODEL
+from services.rag.config import EMBEDDING_MODEL, OPENAI_API_KEY, REASONINGMODEL, VOYAGE_API_KEY
 
 # IMPORTANT: MAX_TOTAL_TOKENS is ONLY for embeddings (Voyage-3-large: 32K tokens)
 # LLM operations (GPT-5.2) support 128K tokens and should NOT use this limit
@@ -46,7 +46,7 @@ class OpenAIEmbeddingBackend(EmbeddingBackend):
         vec = resp.data[0].embedding
         logger.info("Embedding generated (OpenAI).")
         return np.array(vec, dtype=np.float32)
-    
+
     def embed_batch(self, texts: list[str]) -> list[np.ndarray]:
         """Generate embeddings for a batch of texts using OpenAI API"""
         if not texts:
@@ -71,7 +71,7 @@ class RateLimiter:
         # For 1500 req/min: 60/1500 = 0.04 seconds = 40ms per request
         self.min_delay = 60.0 / max_requests_per_minute
         self.last_request_time = 0.0
-    
+
     def wait_if_needed(self, num_requests: int = 1):
         """Wait if needed to stay under rate limit - MUST be called BEFORE making request"""
         with self.lock:
@@ -79,7 +79,7 @@ class RateLimiter:
             # Remove requests older than 1 minute
             while self.request_times and self.request_times[0] < now - 60:
                 self.request_times.popleft()
-            
+
             # Check if we need to wait
             if len(self.request_times) + num_requests > self.max_requests:
                 # Calculate how long to wait
@@ -92,7 +92,7 @@ class RateLimiter:
                     now = time.time()
                     while self.request_times and self.request_times[0] < now - 60:
                         self.request_times.popleft()
-            
+
             # Ensure minimum delay since last request
             time_since_last = now - self.last_request_time
             if time_since_last < self.min_delay * num_requests:
@@ -100,7 +100,7 @@ class RateLimiter:
                 if wait_needed > 0:
                     time.sleep(wait_needed)
                     now = time.time()
-            
+
             # Record the requests BEFORE making the API call
             for _ in range(num_requests):
                 self.request_times.append(now)
@@ -147,7 +147,7 @@ class VoyageEmbeddingBackend(EmbeddingBackend):
                         continue
                 logger.error("Error generating Voyage AI embedding: %s", e)
                 raise
-    
+
     def embed_batch(self, texts: list[str]) -> list[np.ndarray]:
         """Generate embeddings for a batch of texts using Voyage AI API"""
         if not texts:
@@ -209,7 +209,7 @@ class LocalEmbeddingBackend(EmbeddingBackend):
             except Exception as e:
                 logger.warning("LocalEmbeddingBackend: encode failed (%s). Using hash embedding.", e)
         return self._hash_embed(text or "")
-    
+
     def embed_batch(self, texts: list[str]) -> list[np.ndarray]:
         """Generate embeddings for a batch of texts using local model"""
         if not texts:
@@ -219,8 +219,8 @@ class LocalEmbeddingBackend(EmbeddingBackend):
             try:
                 # sentence-transformers encode_batch is more efficient
                 embeddings = self._st_model.encode(
-                    texts, 
-                    normalize_embeddings=True, 
+                    texts,
+                    normalize_embeddings=True,
                     show_progress_bar=False,
                     batch_size=32
                 )
@@ -301,29 +301,29 @@ class LLM:
         """
         text = self.truncate_text(text, max_tokens=MAX_TOTAL_TOKENS, model=model or self.embedding_model)
         return self.emb_backend.embed(text)
-    
+
     def get_openai_embeddings_batch(self, texts: list[str], model: Optional[str] = None, batch_size: int = 100) -> list[np.ndarray]:
         """
         Generate embeddings for a batch of texts using batch API.
         Automatically handles truncation and batching for large lists.
-        
+
         Args:
             texts: List of texts to embed
             model: Optional model override
             batch_size: Maximum number of texts per API call (default 100)
-        
+
         Returns:
             List of numpy arrays (embeddings)
         """
         if not texts:
             return []
-        
+
         # Truncate all texts first
         truncated_texts = [
             self.truncate_text(text, max_tokens=MAX_TOTAL_TOKENS, model=model or self.embedding_model)
             for text in texts
         ]
-        
+
         # Process in batches
         all_embeddings = []
         for i in range(0, len(truncated_texts), batch_size):
@@ -345,7 +345,7 @@ class LLM:
                         logger.error("Error embedding individual text: %s", e2)
                         # Add zero vector as fallback
                         all_embeddings.append(np.zeros(1024, dtype=np.float32))
-        
+
         return all_embeddings
 
     # ---------------- High-level methods (now use _chat + embed router) ----------------
@@ -359,11 +359,11 @@ class LLM:
                     if isinstance(c, dict) and c.get("case"):
                         case_names.append(c["case"])
             cases_line = (f" Cases: {', '.join(case_names[:3])}." if case_names else "")
-            
+
             # Get document_type from main_doc only - don't fall back to self.document_type (which might be US Constitution)
             # If document_type is missing, leave it empty (None) instead of defaulting
             document_type = main_doc.get("document_type") or None
-            
+
             # Build domain-specific instruction only if document_type is available
             domain_instruction = ""
             if document_type:
@@ -496,18 +496,18 @@ class LLM:
             # Country names and abbreviations (case-insensitive)
             r'\bU\.S\.\b', r'\bU\.S\.A\.\b', r'\bUSA\b', r'\bUnited States\b',
             # Legal terms (case-insensitive)
-            r'\bnon-citizens\b', r'\bnoncitizens\b', r'\bcitizens\b', r'\bimmigrants\b', 
+            r'\bnon-citizens\b', r'\bnoncitizens\b', r'\bcitizens\b', r'\bimmigrants\b',
             r'\bdefendants\b', r'\bplaintiffs\b', r'\bpersons\b', r'\ba person\b',
             # Common geographic references (preserve as-is)
             r'\binside the u\.s\.\b', r'\bin the u\.s\.\b', r'\bwithin the u\.s\.\b',
             r'\binside the U\.S\.\b', r'\bin the U\.S\.\b', r'\bwithin the U\.S\.\b',
         ]
-        
+
         # Create placeholders for protected terms
         protected_map = {}
         placeholder_counter = 0
         s_protected = cleaned_text
-        
+
         for pattern in PROTECTED_TERMS:
             matches = list(re.finditer(pattern, s_protected, re.IGNORECASE))
             for match in reversed(matches):  # Process in reverse to preserve indices
@@ -651,14 +651,10 @@ class LLM:
         out = re.sub(r"^(corrected|fixed|edited|correction|grammar fixed)\s*[:\-]\s*", "", out, flags=re.IGNORECASE).strip()
         return out or query
 
-    def get_openai_embedding(self, text, model=EMBEDDING_MODEL):  # kept signature
-        text = self.truncate_text(text, max_tokens=MAX_TOTAL_TOKENS, model=model or self.embedding_model)
-        return self.emb_backend.embed(text)
-
     def truncate_text(self, text, max_tokens=MAX_TOTAL_TOKENS, model=EMBEDDING_MODEL):
         """
         Truncate text for EMBEDDING operations only (Voyage-3-large: 32K tokens).
-        
+
         WARNING: Do NOT use this for LLM prompts! GPT-5.2 supports 128K tokens.
         LLM operations should pass prompts directly to _chat() without truncation.
         """
@@ -688,10 +684,10 @@ class LLM:
         if not query or len(str(query).strip()) < 1:
             return ""
         avoid_text = f"\nAvoid using any of the following phrases: {', '.join(avoid_list)}" if avoid_list else ""
-        
+
         # Generate domain-specific examples based on document_type
         examples = self._get_rephrase_examples(document_type)
-        
+
         prompt = (
             f"You are an expert on the {document_type}. "
             "Rephrase the user's search query so it matches the language and terminology of the {document_type}, "
@@ -719,7 +715,7 @@ class LLM:
     def _get_rephrase_examples(self, document_type: str) -> str:
         """Generate domain-specific examples for query rephrasing based on document_type"""
         document_type_lower = document_type.lower()
-        
+
         if "constitution" in document_type_lower:
             return (
                 "Original: Do illegal immigrants have a consistent right?\n"
@@ -862,10 +858,10 @@ class LLM:
     def check_moderation(self, text: str) -> dict:
         """
         Check if text violates OpenAI moderation policies.
-        
+
         Args:
             text: Text to check for moderation violations
-            
+
         Returns:
             dict with keys:
                 - flagged: bool - Whether the text was flagged
@@ -879,25 +875,25 @@ class LLM:
                 model="omni-moderation-latest"
             )
             moderation_result = moderation_response.results[0]
-            
+
             result = {
                 "flagged": moderation_result.flagged,
                 "categories": [],
                 "scores": {}
             }
-            
+
             if moderation_result.flagged:
                 # Extract flagged categories
                 if hasattr(moderation_result, 'categories'):
                     categories = moderation_result.categories
-                    category_names = ['hate', 'hate_threatening', 'harassment', 'harassment_threatening', 
-                                    'self_harm', 'self_harm_intent', 'self_harm_instructions', 'sexual', 
+                    category_names = ['hate', 'hate_threatening', 'harassment', 'harassment_threatening',
+                                    'self_harm', 'self_harm_intent', 'self_harm_instructions', 'sexual',
                                     'sexual_minors', 'violence', 'violence_graphic']
                     result["categories"] = [
-                        cat for cat in category_names 
+                        cat for cat in category_names
                         if hasattr(categories, cat) and getattr(categories, cat, False)
                     ]
-                
+
                 # Extract category scores
                 if hasattr(moderation_result, 'category_scores'):
                     scores = moderation_result.category_scores
@@ -906,11 +902,11 @@ class LLM:
                             score_value = getattr(scores, cat, 0.0)
                             if isinstance(score_value, (int, float)) and score_value > 0:
                                 result["scores"][cat] = score_value
-                
+
                 logger.warning("[OpenAI][MODERATION] Text flagged: %s", result["categories"])
             else:
                 logger.info("[OpenAI][MODERATION] Text passed moderation check")
-            
+
             return result
         except Exception as e:
             logger.exception("[OpenAI][MODERATION][ERROR] Failed to check moderation: %s", e)
@@ -924,10 +920,10 @@ class LLM:
     def check_us_constitution_relevance(self, query: str) -> bool:
         """
         Check if a query is relevant to the US Constitution using LLM.
-        
+
         Args:
             query: User's query text
-            
+
         Returns:
             True if the query is relevant to US Constitution, False otherwise
         """
@@ -952,24 +948,24 @@ NOT relevant:
 IMPORTANT: Respond with ONLY the word "YES" if the query is relevant to US Constitution, or ONLY the word "NO" if it is not relevant. Do not include any other text.
 
 Response:"""
-        
+
         try:
             logger.info("[OpenAI][TOPIC_CHECK] Checking US Constitution relevance for query: %s", query[:100])
             response = self._chat(prompt, max_tokens=20, temperature=0.1).strip().upper()
-            
+
             # Handle various response formats - check if response contains YES or NO
             if not response:
                 logger.warning("[OpenAI][TOPIC_CHECK] Empty response received, failing open")
                 return True  # Fail open - assume relevant if we can't determine
-            
+
             # Remove any punctuation and whitespace, check first word
             response_clean = response.replace(".", "").replace(",", "").replace("!", "").replace("?", "").strip()
             first_word = response_clean.split()[0] if response_clean.split() else ""
-            
+
             is_relevant = first_word == "YES"
-            logger.info("[OpenAI][TOPIC_CHECK] Query relevance: %s (raw response: %r, cleaned: %r, first_word: %r)", 
+            logger.info("[OpenAI][TOPIC_CHECK] Query relevance: %s (raw response: %r, cleaned: %r, first_word: %r)",
                        is_relevant, response, response_clean, first_word)
-            
+
             return is_relevant
         except Exception as e:
             logger.exception("[OpenAI][TOPIC_CHECK][ERROR] Failed to check relevance: %s", e)
@@ -980,17 +976,17 @@ Response:"""
     def generate_general_info(self, query: str, jurisdiction: Optional[str] = None, language: str = "en") -> str:
         """
         Generate general information response for off-topic queries.
-        
+
         Args:
             query: User's original query
             jurisdiction: Optional jurisdiction/city for location-specific information
             language: Language for response ('en' or 'es')
-            
+
         Returns:
             General information response text
         """
         is_spanish = language == "es"
-        
+
         if jurisdiction and jurisdiction.strip():
             if is_spanish:
                 prompt = f"""El usuario preguntó: "{query}"
@@ -1049,7 +1045,7 @@ This query is not directly related to the US Constitution. Provide a helpful, ge
 IMPORTANT: The first sentence must be the general information, with no preamble.
 
 Response:"""
-        
+
         try:
             logger.info("[OpenAI][GENERAL_INFO] Generating general info response (jurisdiction=%s, language=%s)", jurisdiction, language)
             response = self._chat(prompt, max_tokens=200, temperature=0.7)
@@ -1063,21 +1059,21 @@ Response:"""
 def translate_insight(text: str, source_lang: str, target_lang: str) -> Optional[str]:
     """
     Translate legal insight text between English and Spanish using OpenAI.
-    
+
     Args:
         text: The text to translate
         source_lang: Source language code ('en' or 'es')
         target_lang: Target language code ('en' or 'es')
-        
+
     Returns:
         Translated text or None if translation fails
     """
     if not text or not text.strip():
         return text
-        
+
     if source_lang == target_lang:
         return text
-    
+
     # Language direction
     if source_lang == "en" and target_lang == "es":
         direction = "Translate the following English legal text to Spanish"
@@ -1088,7 +1084,7 @@ def translate_insight(text: str, source_lang: str, target_lang: str) -> Optional
     else:
         logger.warning(f"Unsupported language pair: {source_lang} -> {target_lang}")
         return None
-    
+
     prompt = f"""{direction}.
 
 {instructions}
@@ -1097,7 +1093,7 @@ Text to translate:
 {text}
 
 Translation:"""
-    
+
     try:
         logger.info(f"Translating insight from {source_lang} to {target_lang}")
         response = openai_client.chat.completions.create(
@@ -1117,22 +1113,22 @@ Translation:"""
 def translate_query(text: str, source_lang: str = "auto", target_lang: str = "en") -> Optional[str]:
     """
     Translate query text from Spanish to English for search purposes.
-    
+
     Args:
         text: The query text to translate
         source_lang: Source language code ('en', 'es', or 'auto' for auto-detect)
         target_lang: Target language code (should be 'en' for search)
-        
+
     Returns:
         Translated text or original text if translation fails or not needed
     """
     if not text or not text.strip():
         return text
-        
+
     if source_lang == "en" or target_lang != "en":
         # Already English or not translating to English
         return text
-    
+
     if source_lang == "auto":
         # Simple heuristic: check for common Spanish words/characters
         text_lower = text.lower()
@@ -1143,19 +1139,19 @@ def translate_query(text: str, source_lang: str = "auto", target_lang: str = "en
         ]
         has_spanish_chars = any(char in text for char in "áéíóúñüÁÉÍÓÚÑÜ¿¡")
         has_spanish_indicators = any(indicator in text_lower for indicator in spanish_indicators)
-        
+
         if not (has_spanish_chars or has_spanish_indicators):
             # Likely English, no translation needed
             return text
         source_lang = "es"
-    
+
     if source_lang == "es" and target_lang == "en":
         direction = "Translate the following Spanish query to English"
         instructions = "Maintain the legal terminology and meaning. This is a search query, so keep it concise and accurate."
     else:
         logger.warning(f"Unsupported query translation pair: {source_lang} -> {target_lang}")
         return text
-    
+
     prompt = f"""{direction}.
 
 {instructions}
@@ -1164,7 +1160,7 @@ Query to translate:
 {text}
 
 Translation:"""
-    
+
     try:
         logger.info(f"Translating query from {source_lang} to {target_lang}")
         response = openai_client.chat.completions.create(

@@ -3,20 +3,21 @@
 Alternative script to fetch California codes using multiple sources.
 This script tries alternative sources when leginfo.legislature.ca.gov is blocked.
 """
-import os
-import sys
+import argparse
 import json
 import logging
+import os
+import re
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+from threading import Lock
+from typing import Any, Dict, List, Optional
+from urllib.parse import parse_qs, urlparse
+
 import requests
 from bs4 import BeautifulSoup
-from pathlib import Path
-from typing import Any, Dict, List, Optional
-import time
-import re
-from urllib.parse import urlparse, parse_qs
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from threading import Lock
-import argparse
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("fetch_ca_codes_alt")
@@ -73,12 +74,12 @@ def get_headers() -> Dict[str, str]:
         "Referer": "https://www.google.com/",  # Make it look like we came from Google
     }
 
-def fetch_with_retry(url: str, params: Optional[Dict] = None, retries: int = 3, 
+def fetch_with_retry(url: str, params: Optional[Dict] = None, retries: int = 3,
                      min_delay: float = 2.0, timeout: tuple = (30, 60)) -> Optional[requests.Response]:
     """Fetch URL with retry logic, longer delays, and session management."""
     session = requests.Session()
     session.headers.update(get_headers())
-    
+
     for attempt in range(retries):
         try:
             # Longer delays for geo-blocked sites
@@ -86,7 +87,7 @@ def fetch_with_retry(url: str, params: Optional[Dict] = None, retries: int = 3,
                 wait_time = min_delay * (2 ** attempt)
                 logger.info(f"Waiting {wait_time:.1f}s before retry {attempt + 1}...")
                 time.sleep(wait_time)
-            
+
             response = session.get(url, params=params, timeout=timeout, allow_redirects=True)
             response.raise_for_status()
             return response
@@ -105,17 +106,17 @@ def fetch_with_retry(url: str, params: Optional[Dict] = None, retries: int = 3,
                 logger.warning(f"Attempt {attempt + 1} failed for {url}: {e}")
             else:
                 logger.error(f"Failed to fetch {url} after {retries} attempts: {e}")
-    
+
     return None
 
 def try_california_public_law(code_name: str, code_abbrev: str) -> List[Dict[str, Any]]:
     """Try to fetch from california.public.law."""
     logger.info(f"Trying california.public.law for {code_name}...")
-    
+
     # California Public Law uses different URL patterns
     code_slug = code_name.lower().replace(" ", "-")
     base_url = f"https://california.public.law/codes/{code_slug}"
-    
+
     sections = []
     # Try to fetch the index page
     response = fetch_with_retry(base_url, timeout=(30, 90))
@@ -133,7 +134,7 @@ def try_california_public_law(code_name: str, code_abbrev: str) -> List[Dict[str
                 if section_data:
                     sections.append(section_data)
                     time.sleep(1)  # Rate limiting
-    
+
     return sections
 
 def fetch_section_from_public_law(url: str, code_name: str) -> Optional[Dict[str, Any]]:
@@ -142,31 +143,31 @@ def fetch_section_from_public_law(url: str, code_name: str) -> Optional[Dict[str
         response = fetch_with_retry(url, timeout=(30, 60))
         if not response:
             return None
-        
+
         soup = BeautifulSoup(response.text, "html.parser")
-        
+
         # Find section content
         content = soup.find("div", class_=re.compile(r"section|content|text", re.I))
         if not content:
             content = soup.find("article") or soup.find("main")
-        
+
         if content:
             # Extract section number from URL or content
             section_match = re.search(r"section[_-]?(\d+(?:\.\d+)*)", url, re.I)
             section_num = section_match.group(1) if section_match else "unknown"
-            
+
             # Extract title
             title_elem = content.find(["h1", "h2", "h3"])
             title = title_elem.get_text(strip=True) if title_elem else f"Section {section_num}"
-            
+
             # Extract text
             text = content.get_text(separator=" ", strip=True)
             text = re.sub(r'\s+', ' ', text).strip()
-            
+
             # Remove navigation/UI elements
             text = re.sub(r'California Public Law.*?Section', 'Section', text, flags=re.IGNORECASE | re.DOTALL)
             text = re.sub(r'\s+', ' ', text).strip()
-            
+
             if len(text) > 50:
                 return {
                     "code": code_name,
@@ -180,7 +181,7 @@ def fetch_section_from_public_law(url: str, code_name: str) -> Optional[Dict[str
                 }
     except Exception as e:
         logger.warning(f"Error fetching from public.law: {e}")
-    
+
     return None
 
 def create_manual_instructions():
@@ -198,7 +199,7 @@ here are alternative methods to obtain the data:
 ## Option 2: Use Alternative Sources
 1. **California Public Law**: https://california.public.law/codes
    - More accessible, but may require different parsing
-   
+
 2. **Justia**: https://law.justia.com/codes/california
    - Good alternative source
 
@@ -226,42 +227,42 @@ def main():
     parser.add_argument("--test", action="store_true",
                        help="Test with just one code (Civil Code)")
     args = parser.parse_args()
-    
+
     script_dir = Path(__file__).resolve().parent
     base_dir = script_dir.parent.parent
     output_path = base_dir / "Data" / "Knowledge" / "ca_code.json"
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    
+
     logger.info("="*60)
     logger.info("California Codes Fetch - Alternative Sources")
     logger.info("="*60)
     logger.warning("NOTE: leginfo.legislature.ca.gov appears to be geo-blocked.")
     logger.info("Attempting alternative sources...")
     logger.info("")
-    
+
     # Test with one code first
     test_codes = [("Civil Code", "CIV")] if args.test else list(CA_CODES.items())
-    
+
     all_sections = []
-    
+
     for code_name, code_abbrev in test_codes:
         logger.info(f"\n{'='*60}")
         logger.info(f"Processing: {code_name} ({code_abbrev})")
         logger.info(f"{'='*60}")
-        
+
         sections = []
-        
+
         if args.source in ["public_law", "all"]:
             sections = try_california_public_law(code_name, code_abbrev)
             if sections:
                 logger.info(f"✓ Successfully fetched {len(sections)} sections from california.public.law")
                 all_sections.extend(sections)
                 continue
-        
+
         if not sections:
             logger.warning(f"Could not fetch {code_name} from any alternative source")
             logger.info("Consider using a VPN with California IP or manual download")
-    
+
     # Save results
     if all_sections:
         output_data = {
@@ -271,15 +272,15 @@ def main():
                 }
             }
         }
-        
+
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(output_data, f, indent=2, ensure_ascii=False)
-        
+
         logger.info(f"\n✓ Saved {len(all_sections)} sections to {output_path}")
     else:
         logger.warning("\n✗ No sections were fetched.")
         logger.info("\n" + create_manual_instructions())
-        
+
         # Save instructions to file
         instructions_path = script_dir / "CA_CODES_MANUAL_INSTRUCTIONS.md"
         with open(instructions_path, "w", encoding="utf-8") as f:

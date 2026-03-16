@@ -20,7 +20,7 @@ for d in docs:
 if sample:
     print(f"Title: {sample['title']}")
     print(f"References: {sample.get('references', [])}")
-    print(f"\nClauses:")
+    print("\nClauses:")
     for c in sample['clauses'][:5]:
         print(f"  {c['number']}: {c['title'][:60]}")
         print(f"    Text length: {len(c['text'])} chars")

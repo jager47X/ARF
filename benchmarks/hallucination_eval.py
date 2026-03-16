@@ -84,8 +84,9 @@ class FaithfulnessEvaluator:
     def client(self):
         if self._client is None:
             try:
-                from openai import OpenAI
                 import os
+
+                from openai import OpenAI
                 key = self._api_key or os.getenv("OPENAI_API_KEY")
                 self._client = OpenAI(api_key=key)
             except ImportError:

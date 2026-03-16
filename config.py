@@ -1,8 +1,9 @@
 # config.py
 import os
+from pathlib import Path
+
 from dotenv import load_dotenv
 from pymongo import MongoClient
-from pathlib import Path
 
 # Global variable to track if env has been loaded
 _env_loaded = False
@@ -11,7 +12,7 @@ _env_file_used = None
 # Determine which .env file to use (same logic as main config.py)
 def get_env_file(env_override: str = None) -> str:
     """Load .env file based on environment override or auto-detection
-    
+
     Args:
         env_override: Optional environment name ('production', 'dev', 'local')
                      If None, auto-detects based on Docker and file existence
@@ -20,7 +21,7 @@ def get_env_file(env_override: str = None) -> str:
     # or in the project root
     config_dir = Path(__file__).parent.parent.parent  # Goes from config.py -> rag -> services -> kyr-backend
     project_root = config_dir.parent
-    
+
     if env_override == "production":
         # Try kyr-backend first, then project root
         for base_dir in [config_dir, project_root]:
@@ -41,15 +42,15 @@ def get_env_file(env_override: str = None) -> str:
             if env_file.exists():
                 return str(env_file)
         return ".env"
-    
+
     # Auto-detect (original logic)
     # Check if running in Docker
     in_docker = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER') == 'true'
-    
+
     if in_docker:
         # In Docker, check DOCKER_ENV environment variable to determine which .env file to use
         docker_env = os.environ.get('DOCKER_ENV', '').lower()
-        
+
         if docker_env == 'local':
             # Dockerfile.local -> use .env.local
             for base_dir in [config_dir, project_root]:
@@ -78,23 +79,23 @@ def get_env_file(env_override: str = None) -> str:
                 if env_default.exists():
                     return str(env_default)
             return ".env"
-    
+
     # Not in Docker - check in both kyr-backend and project root
     for base_dir in [config_dir, project_root]:
         env_local = base_dir / ".env.local"
         env_default = base_dir / ".env"
-        
+
         if env_local.exists():
             return str(env_local)
         elif env_default.exists():
             return str(env_default)
-    
+
     # Final fallback
     return ".env"
 
 def load_environment(env_override: str = None):
     """Load environment variables from the appropriate file
-    
+
     Args:
         env_override: Optional environment name ('production', 'dev', 'local')
     """
@@ -112,7 +113,7 @@ if not _env_loaded:
     load_environment()
 
 # These values are read from environment variables
-# If load_environment() is called with override=True after import, 
+# If load_environment() is called with override=True after import,
 # these will need to be re-read from os.getenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 VOYAGE_API_KEY = os.getenv("VOYAGE_API_KEY")
@@ -139,7 +140,7 @@ CLIENT_CASE_THRESHOLDS = {
         "LLM_VERIFication": 0.75,        # check with LLM verification additionaly
         "RAG_SEARCH": 0.85,# anytime pass here, return as a result
         "confident": 0.85, #saves  the summaries only above this threshold
-        "FILTER_GAP": 0.10,  # if there is higer gap comapre to the top result dont show the 
+        "FILTER_GAP": 0.10,  # if there is higer gap comapre to the top result dont show the
         "LLM_SCORE": 0.10,
         "HYBRID_SEMANTIC_WEIGHT": 0.90,  # Weight for semantic scores in hybrid search (70%)
         "HYBRID_BM25_WEIGHT": 0.10,      # Weight for BM25 scores in hybrid search (30%)
@@ -156,7 +157,7 @@ DOMAIN_THRESHOLDS = {
         "LLM_VERIFication": 0.70,        # Lowered from 0.70 to 0.45 to allow documents with semantic scores ~0.48-0.50 to be verified
         "RAG_SEARCH": 0.85,# anytime pass here, return as a result
         "confident": 0.85, #saves  the summaries only above this threshold
-        "FILTER_GAP": 0.20,  # if there is higer gap comapre to the top result dont show the 
+        "FILTER_GAP": 0.20,  # if there is higer gap comapre to the top result dont show the
         "LLM_SCORE": 0.10,
     },
     "code_of_federal_regulations": {
@@ -166,7 +167,7 @@ DOMAIN_THRESHOLDS = {
         "LLM_VERIFication": 0.70,        # check with LLM verification additionaly
         "RAG_SEARCH": 0.85,# anytime pass here, return as a result
         "confident": 0.85, #saves  the summaries only above this threshold
-        "FILTER_GAP": 0.20,  # if there is higer gap comapre to the top result dont show the 
+        "FILTER_GAP": 0.20,  # if there is higer gap comapre to the top result dont show the
         "LLM_SCORE": 0.10,
     },
     "us_code": {
@@ -176,7 +177,7 @@ DOMAIN_THRESHOLDS = {
         "LLM_VERIFication": 0.70,        # check with LLM verification additionaly
         "RAG_SEARCH": 0.85,# anytime pass here, return as a result
         "confident": 0.85, #saves  the summaries only above this threshold
-        "FILTER_GAP": 0.20,  # if there is higer gap comapre to the top result dont show the 
+        "FILTER_GAP": 0.20,  # if there is higer gap comapre to the top result dont show the
         "LLM_SCORE": 0.10,
     },
     "uscis_policy": {
@@ -186,11 +187,11 @@ DOMAIN_THRESHOLDS = {
         "LLM_VERIFication": 0.70,        # check with LLM verification additionaly
         "RAG_SEARCH": 0.85,  # Lowered from 0.85 to 0.80 (effective 0.70 after -0.1) to match actual search scores (top results ~0.83)
         "confident": 0.85, #saves  the summaries only above this threshold
-        "FILTER_GAP": 0.20,  # if there is higer gap comapre to the top result dont show the 
+        "FILTER_GAP": 0.20,  # if there is higer gap comapre to the top result dont show the
         "LLM_SCORE": 0.10,
     }
 }
-# 
+#
 # ----------
 # --------------------
 # Base Document Bias Map
