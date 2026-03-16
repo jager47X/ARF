@@ -33,3 +33,14 @@ ENV/
 .DS_Store
 Thumbs.db
 
+# Claude Code local config
+.claude/
+
+# Benchmark results (generated)
+benchmarks/results/
+
+# Model artifacts
+models/*.pt
+models/*.bin
+models/*.onnx
+models/*.pkl
