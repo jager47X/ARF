@@ -1,6 +1,12 @@
 # ARF - Advanced Retrieval Framework
 
 [![CI](https://github.com/jager47X/ARF/actions/workflows/ci.yml/badge.svg)](https://github.com/jager47X/ARF/actions/workflows/ci.yml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![MongoDB Atlas](https://img.shields.io/badge/MongoDB-Atlas-47A248?logo=mongodb&logoColor=white)](https://www.mongodb.com/atlas)
+[![Voyage AI](https://img.shields.io/badge/Embeddings-Voyage--3--large-purple)](https://www.voyageai.com/)
+[![OpenAI](https://img.shields.io/badge/LLM-OpenAI-412991?logo=openai&logoColor=white)](https://openai.com/)
+[![Code style: Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 
 **ARF** (Advanced Retrieval Framework) is a production-ready RAG system designed to minimize cost and hallucination based on R-Flow. Optimized for legal document search and analysis across multiple domains.
 
