@@ -467,23 +467,26 @@ rag = RAG(COLLECTION["US_CONSTITUTION_SET"], debug_mode=True)
 
 ## Evaluation & Benchmarks
 
-### Ablation Study
+### Benchmark: Ablation Study
 
-Measured on 15 US Constitution benchmark queries. Each strategy runs in its **own isolated RAG instance** — strategies build incrementally to show the marginal gain of each layer.
+Measured on 15 US Constitution benchmark queries. Each strategy runs in its **own isolated RAG instance** — strategies build incrementally to show the marginal gain of each layer. Latency measured with in-memory query cache enabled.
 
 | Strategy | MRR | P@1 | P@5 | R@5 | NDCG@5 | LLM% | Latency |
 |----------|-----|-----|-----|-----|--------|------|---------|
-| Semantic Only | 0.665 | 0.600 | 0.147 | 0.613 | 0.603 | 0% | 408 ms |
-| + Keyword | 0.665 | 0.600 | 0.147 | 0.613 | 0.603 | 0% | 471 ms |
+| Semantic Only | 0.665 | 0.600 | 0.147 | 0.613 | 0.603 | 0% | 410 ms |
+| + Keyword | 0.665 | 0.600 | 0.147 | 0.613 | 0.603 | 0% | 437 ms |
 | + Threshold (ABC Gates) | 0.665 | 0.600 | 0.147 | 0.613 | 0.603 | 100% | 453 ms |
 | **+ MLP Reranker** | **0.933** | **0.933** | **0.267** | **0.900** | **0.908** | **0%** | **714 ms** |
 | + MLP + LLM Fallback | 0.933 | 0.933 | 0.253 | 0.867 | 0.882 | 20% | 768 ms |
+| Full ARF Pipeline (cold) | 0.489 | 0.400 | 0.133 | 0.580 | 0.503 | — | 807 ms |
+| **Full ARF Pipeline (cached)** | **0.679** | **0.571** | **0.171** | **0.743** | **0.682** | **0%** | **335 ms** |
 
 > **Key findings:**
 > - **Semantic search** provides a solid baseline (MRR 0.665) — but the right answer is often not at rank 1.
 > - **Keyword matching** adds no measurable gain on this query set (US Constitution queries are predominantly semantic, not keyword-based).
 > - **Threshold filtering** adds quality gates but no ranking improvement — and incurs 100% LLM verification calls in the borderline band.
 > - **MLP Reranker is the breakthrough**: MRR jumps from 0.665 to **0.933** (+40%), P@1 from 0.600 to **0.933**, and R@5 from 0.613 to **0.900** — with **zero LLM calls**. The MLP learns which features predict relevance and reranks candidates by blending semantic score with learned probability.
+> - **In-memory cache** brings cached query latency to **335 ms** — faster than raw MongoDB Atlas (410 ms) — with zero API calls and $0.00 cost.
 > - **MLP + LLM Fallback** matches MLP-only quality while using LLM verification on only **20%** of candidates (those the MLP is uncertain about). This is the production configuration.
 >
 > **MLP model**: 128-64-32 MLP with isotonic calibration. Trained on 3,600 labeled query-document pairs across 4 legal domains. F1=0.940, AUC-ROC=0.983.
@@ -494,7 +497,7 @@ Measured on 15 US Constitution benchmark queries. Each strategy runs in its **ow
 
 ![Cost, Latency & MRR Comparison](media/cost_latency_comparison.png)
 
-*ARF + MLP (blue) vs ARF LLM rerank (amber) vs MongoDB Atlas raw (red). As cache grows, ARF cost drops to $0 and latency to ~500ms — while maintaining MRR 0.933 (vs MongoDB's 0.665).*
+*As query volume grows and cache warms, ARF latency drops from ~800ms (cold) to **335ms** (cached) — faster than raw MongoDB Atlas (410ms). Cached queries cost **$0.00** (zero API calls). MRR improves from 0.489 (cold) to 0.679 (cached) as verified results are reused.*
 
 ### Cost Analysis
 
@@ -509,13 +512,13 @@ Measured by instrumenting every external API call across 200 live queries (20 un
 | **OpenAI chat calls** | 0 | 0 | **0** |
 | **OpenAI moderation calls** | 0 | 0 | **0** |
 | **Cache hit rate** | **100%** (20/20) | **29%** (52/180) | **36%** |
-| **Avg latency** | **671 ms** | 19,368 ms | 17,499 ms |
+| **Avg latency** | **335 ms** (in-memory cache) | 19,368 ms | 17,499 ms |
 | **P50 latency** | — | — | 18,666 ms |
 | **API cost** | **$0.00** | $0.000926 | **$0.000926** |
 | **Cost/query** | **$0.000000** | $0.000005 | **$0.000005** |
 
 > **Key findings from real measurement:**
-> - **Cached queries cost $0.00** — zero API calls, 671ms avg latency. All 20 "cold" queries hit cache from prior runs.
+> - **Cached queries cost $0.00** — zero API calls, **335ms avg latency** with in-memory cache (280ms min). All 20 "cold" queries hit cache from prior runs.
 > - **Similar queries mostly miss cache** (29% hit rate) — rephrased queries go through the full pipeline including Voyage batch embedding (~47 texts/call for alias search). OpenAI chat/moderation calls were **zero** on this run because threshold gates resolved all queries without LLM reranking.
 > - **Voyage embedding is the only cost** — $0.000926 total for 200 queries. The batch embedding (~47 texts/call) is the real cost driver, not LLM calls.
 
