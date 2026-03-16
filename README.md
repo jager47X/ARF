@@ -4,6 +4,21 @@
 
 **ARF** (Advanced Retrieval Framework) is a production-ready RAG system designed to minimize cost and hallucination based on R-Flow. Optimized for legal document search and analysis across multiple domains.
 
+## Table of Contents
+
+- [Summary](#summary)
+- [Live Demo](#-live-demo)
+- [Overview](#overview)
+- [Architecture](#architecture)
+- [Evaluation & Benchmarks](#evaluation--benchmarks)
+- [MLP Reranker](#mlp-reranker)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Usage](#usage)
+- [Components](#components)
+- [Development](#development)
+- [Contributing](#contributing)
+
 ### Summary
 
 **What makes ARF different from other RAG systems:**
@@ -28,21 +43,6 @@ Most RAG pipelines rely on expensive LLM calls to rerank and verify retrieval re
 ![KnowYourRights.ai Demo](media/demo_en.png)
 
 *KnowYourRights.ai - AI-powered legal rights search and case intake platform powered by ARF*
-
-## Table of Contents
-
-- [Summary](#summary)
-- [Overview](#overview)
-- [Architecture](#architecture)
-- [Evaluation & Benchmarks](#evaluation--benchmarks)
-- [MLP Reranker](#mlp-reranker)
-- [Installation](#installation)
-- [Configuration](#configuration)
-- [Usage](#usage)
-- [Data Sources](#data-sources)
-- [Components](#components)
-- [Development](#development)
-- [Contributing](#contributing)
 
 ## Overview
 
@@ -115,53 +115,7 @@ ARF/
 
 ### Query Processing Flow
 
-```mermaid
-flowchart TD
-    A["User Query<br/>(en / es)"] --> B{"Language?"}
-    B -- es --> C["Translate to English"]
-    B -- en --> D["Normalize Query"]
-    C --> D
-
-    D --> E["Get / Create Embedding<br/>(Voyage-3-large, 1024d)"]
-    E --> F{"Cached results<br/>exist?"}
-    F -- yes --> G["Return cached results<br/>(skip all LLM calls)"]
-
-    F -- no --> H["OpenAI Omni<br/>Moderation Check"]
-    H -- flagged --> I["Reject query"]
-    H -- pass --> J["fix_query via LLM"]
-
-    J --> K["Multi-Strategy Search"]
-
-    K --> K1["Semantic Vector Search<br/>(MongoDB Atlas)"]
-    K --> K2{"Alias search<br/>enabled?"}
-    K --> K3{"Keyword matcher<br/>enabled?"}
-    K2 -- yes --> K2a["Alias Embedding<br/>Cosine Similarity"]
-    K3 -- yes --> K3a["Article / Section<br/>Pattern Match"]
-
-    K1 --> L["Merge & Score"]
-    K2a --> L
-    K3a --> L
-
-    L --> M{"score >= RAG_SEARCH<br/>(0.85)?"}
-    M -- yes --> N["Accept result"]
-    M -- no --> O{"score >= LLM_VERIF<br/>(0.70)?"}
-    O -- yes --> MLP{"MLP Reranker<br/>(learned model)"}
-    MLP -- "confident accept<br/>(p >= 0.6)" --> N
-    MLP -- "confident reject<br/>(p <= 0.4)" --> Q
-    MLP -- "uncertain<br/>(0.4 < p < 0.6)" --> P["LLM Reranking<br/>(fallback only)"]
-    O -- no --> Q{"Rephrase<br/>attempts left?"}
-    P -- verified --> N
-    P -- rejected --> Q
-    Q -- yes --> R["Rephrase query<br/>via LLM"] --> E
-    Q -- no --> S["Return empty"]
-
-    N --> T{"score >= confident<br/>(0.85)?"}
-    T -- yes --> U["Cache results +<br/>Generate & cache summary"]
-    T -- no --> V["Return results<br/>(no cache)"]
-    U --> W["Gap Filter<br/>(remove outliers)"]
-    V --> W
-    W --> X["Return ranked results<br/>+ bilingual summary"]
-```
+![Query Processing Flow](media/mermaid.png)
 
 #### Pipeline Stages
 
