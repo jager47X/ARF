@@ -85,6 +85,31 @@ class QueryProcessor:
         self._cached_query_embedding = None  # Cache embedding for current request
         self._request_insight_cache = {}  # Key: (norm_query, knowledge_id, language) -> insight text
 
+        # --- MLP reranker (optional second-stage reranker) ---
+        self.mlp_reranker = None
+        self.feature_extractor = None
+        self._mlp_enabled = bool(self.thr.get("use_mlp_reranker", False))
+        self._mlp_uncertainty_low = float(self.thr.get("mlp_uncertainty_low", 0.4))
+        self._mlp_uncertainty_high = float(self.thr.get("mlp_uncertainty_high", 0.6))
+        if self._mlp_enabled:
+            try:
+                from rag_dependencies.feature_extractor import FeatureExtractor
+                from rag_dependencies.mlp_reranker import MLPReranker
+
+                mlp_model_path = self.thr.get("mlp_model_path", "models/mlp_reranker.joblib")
+                self.mlp_reranker = MLPReranker(model_path=mlp_model_path)
+                if self.mlp_reranker.is_loaded:
+                    domain = self.cfg.get("main_collection_name", "unknown")
+                    self.feature_extractor = FeatureExtractor(config=self.cfg, domain=domain)
+                    logger.info("[RAG][MLP] MLP reranker initialized for domain=%s", domain)
+                else:
+                    self.mlp_reranker = None
+                    logger.info("[RAG][MLP] MLP model not loaded -- falling back to LLM verification only")
+            except Exception as e:
+                self.mlp_reranker = None
+                self.feature_extractor = None
+                logger.info("[RAG][MLP] MLP reranker unavailable: %s -- falling back to LLM verification only", e)
+
     # ----------------- public -----------------
     def process_query(
         self,
@@ -2235,6 +2260,69 @@ class QueryProcessor:
         top = items_sorted[0][1]
         return [(d, s) for (d, s) in items_sorted if (top - s) <= self.FILTER_GAP]
 
+    def _mlp_rerank(
+        self,
+        query: str,
+        candidates: List[Tuple[dict, float]],
+        query_embedding=None,
+        keyword_matches: Optional[list] = None,
+        alias_matches: Optional[list] = None,
+    ) -> Tuple[List[Tuple[dict, float]], List[Tuple[dict, float]], List[Tuple[dict, float]]]:
+        """Run MLP reranker on candidates and split into three groups.
+
+        Returns:
+            (accepted, needs_llm, rejected) where each is a list of (doc, score) tuples.
+            - accepted: MLP confident the doc is relevant (probability >= mlp_uncertainty_high)
+            - needs_llm: MLP uncertain, escalate to LLM verification
+            - rejected: MLP confident the doc is NOT relevant (probability < mlp_uncertainty_low)
+        """
+        if not candidates:
+            return [], [], []
+
+        try:
+            features = self.feature_extractor.extract_batch(
+                query=query,
+                results=candidates,
+                query_embedding=query_embedding,
+                keyword_matches=keyword_matches,
+                alias_matches=alias_matches,
+            )
+            vectors = [self.feature_extractor.to_vector(f) for f in features]
+            predictions = self.mlp_reranker.predict_with_confidence(vectors)
+
+            if not predictions or len(predictions) != len(candidates):
+                logger.warning("[RAG][MLP] Prediction count mismatch (%d predictions vs %d candidates) -- sending all to LLM",
+                              len(predictions) if predictions else 0, len(candidates))
+                return [], candidates, []
+
+            accepted_mlp: List[Tuple[dict, float]] = []
+            needs_llm: List[Tuple[dict, float]] = []
+            rejected_mlp: List[Tuple[dict, float]] = []
+
+            for (doc, score), pred in zip(candidates, predictions):
+                prob = pred["probability"]
+                if prob >= self._mlp_uncertainty_high:
+                    accepted_mlp.append((doc, score))
+                    logger.debug("[RAG][MLP][DETAIL] ACCEPT: title=%r score=%.4f mlp_prob=%.3f",
+                                doc.get("title", "N/A"), score, prob)
+                elif prob < self._mlp_uncertainty_low:
+                    rejected_mlp.append((doc, score))
+                    logger.debug("[RAG][MLP][DETAIL] REJECT: title=%r score=%.4f mlp_prob=%.3f",
+                                doc.get("title", "N/A"), score, prob)
+                else:
+                    needs_llm.append((doc, score))
+                    logger.debug("[RAG][MLP][DETAIL] UNCERTAIN: title=%r score=%.4f mlp_prob=%.3f",
+                                doc.get("title", "N/A"), score, prob)
+
+            logger.info("[RAG][MLP] Reranking %d candidates: %d accepted, %d rejected, %d -> LLM fallback",
+                        len(candidates), len(accepted_mlp), len(rejected_mlp), len(needs_llm))
+
+            return accepted_mlp, needs_llm, rejected_mlp
+
+        except Exception as e:
+            logger.warning("[RAG][MLP] Reranking failed: %s -- sending all to LLM", e)
+            return [], candidates, []
+
     def _apply_main_abc_gates(
         self,
         *,
@@ -2299,23 +2387,51 @@ class QueryProcessor:
             logger.info("[RAG][LLM_VERIFY] Verifying %d candidates (scores: %s)",
                        len(verify_candidates),
                        [f"{s:.3f}" for _, s in verify_candidates[:10]])
-            item_type = "doc" if self.sql else "case"
-            try:
-                # Use parallel verification for faster processing
-                vm = self.llmv.verify_many_parallel(current_text, verify_candidates, item_type=item_type, max_workers=5) or []
-                verified_kept = [(d, s) for (d, s) in vm if s >= self.RAG_SEARCH]
-                logger.info("[RAG][LLM_VERIFY] Verified %d/%d candidates passed (>=%.3f)",
-                           len(verified_kept), len(verify_candidates), self.RAG_SEARCH)
-                # Log verification results
-                for doc, score in verified_kept[:10]:
-                    logger.info("[RAG][LLM_VERIFY][DETAIL] PASSED: title=%r score=%.4f",
-                               doc.get("title", "N/A"), score)
-                for doc, score in vm:
-                    if score < self.RAG_SEARCH:
-                        logger.info("[RAG][LLM_VERIFY][DETAIL] FAILED: title=%r score=%.4f < %.3f",
-                                   doc.get("title", "N/A"), score, self.RAG_SEARCH)
-            except Exception as e:
-                logger.info("[RAG][MAIN] verify_many_parallel failed: %s", e)
+
+            # --- MLP reranker: triage candidates before LLM verification ---
+            llm_candidates = verify_candidates  # default: send all to LLM
+            mlp_accepted: List[Tuple[dict, float]] = []
+
+            if self.mlp_reranker is not None and self.mlp_reranker.is_loaded and self.feature_extractor is not None:
+                try:
+                    query_embedding = getattr(self, "_cached_query_embedding", None)
+                    mlp_accepted, mlp_needs_llm, mlp_rejected = self._mlp_rerank(
+                        query=current_text,
+                        candidates=verify_candidates,
+                        query_embedding=query_embedding,
+                    )
+                    llm_candidates = mlp_needs_llm  # only uncertain ones go to LLM
+                    llm_saved = len(verify_candidates) - len(mlp_needs_llm)
+                    logger.info("[RAG][MLP] Saved %d LLM verification calls (%d accepted, %d rejected, %d uncertain -> LLM)",
+                               llm_saved, len(mlp_accepted), len(mlp_rejected), len(mlp_needs_llm))
+                except Exception as e:
+                    logger.warning("[RAG][MLP] MLP reranking failed: %s -- sending all %d to LLM", e, len(verify_candidates))
+                    llm_candidates = verify_candidates
+                    mlp_accepted = []
+
+            # --- LLM verification on remaining candidates (MLP-uncertain or all if MLP disabled) ---
+            llm_verified: List[Tuple[dict, float]] = []
+            if llm_candidates:
+                item_type = "doc" if self.sql else "case"
+                try:
+                    # Use parallel verification for faster processing
+                    vm = self.llmv.verify_many_parallel(current_text, llm_candidates, item_type=item_type, max_workers=5) or []
+                    llm_verified = [(d, s) for (d, s) in vm if s >= self.RAG_SEARCH]
+                    logger.info("[RAG][LLM_VERIFY] Verified %d/%d candidates passed (>=%.3f)",
+                               len(llm_verified), len(llm_candidates), self.RAG_SEARCH)
+                    # Log verification results
+                    for doc, score in llm_verified[:10]:
+                        logger.info("[RAG][LLM_VERIFY][DETAIL] PASSED: title=%r score=%.4f",
+                                   doc.get("title", "N/A"), score)
+                    for doc, score in vm:
+                        if score < self.RAG_SEARCH:
+                            logger.info("[RAG][LLM_VERIFY][DETAIL] FAILED: title=%r score=%.4f < %.3f",
+                                       doc.get("title", "N/A"), score, self.RAG_SEARCH)
+                except Exception as e:
+                    logger.info("[RAG][MAIN] verify_many_parallel failed: %s", e)
+
+            # Combine MLP-accepted candidates with LLM-verified candidates
+            verified_kept = mlp_accepted + llm_verified
 
         merged = _merge_keep_best(base_results, verified_kept)
         if not merged:

@@ -197,17 +197,17 @@ class MLPReranker:
         Returns:
             Dict with training metrics (accuracy, f1, auc, etc.).
         """
-        from sklearn.neural_network import MLPClassifier
-        from sklearn.preprocessing import StandardScaler
-        from sklearn.model_selection import cross_val_predict, StratifiedKFold
+        from sklearn.calibration import CalibratedClassifierCV
         from sklearn.metrics import (
             accuracy_score,
+            f1_score,
             precision_score,
             recall_score,
-            f1_score,
             roc_auc_score,
         )
-        from sklearn.calibration import CalibratedClassifierCV
+        from sklearn.model_selection import StratifiedKFold, cross_val_predict
+        from sklearn.neural_network import MLPClassifier
+        from sklearn.preprocessing import StandardScaler
 
         logger.info(
             "Training MLP: samples=%d, features=%d, arch=%s, calibrate=%s",
