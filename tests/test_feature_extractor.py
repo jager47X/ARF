@@ -1,28 +1,27 @@
 """Unit tests for FeatureExtractor — pure logic, no MongoDB required."""
 
 import math
-import sys
 import os
+import sys
 
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from rag_dependencies.feature_extractor import (
-    FeatureExtractor,
+    _FEATURE_NAMES,
     DOMAIN_ENCODING,
-    _tokenize,
-    _cosine_similarity,
-    _jaccard_similarity,
+    FeatureExtractor,
+    _bias_for_document,
     _compute_bm25_score,
+    _cosine_similarity,
     _get_document_text,
     _has_nested,
-    _section_depth,
+    _jaccard_similarity,
     _match_type,
-    _bias_for_document,
-    _FEATURE_NAMES,
+    _section_depth,
+    _tokenize,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
