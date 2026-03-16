@@ -53,52 +53,83 @@ def keyword_matcher(fixture_docs):
     km._title_lc_to_title = {t.lower(): t for t in titles}
     km._article_lc_to_article = {a.lower(): a for a in articles}
     km.article_to_sections = article_sections
-    km._sections_by_article_lc = {
-        art.lower(): {s.lower() for s in secs}
-        for art, secs in article_sections.items()
-    }
+    km._sections_by_article_lc = {art.lower(): {s.lower() for s in secs} for art, secs in article_sections.items()}
     km.important_terms = list({*(articles + titles)})
     km._number_word_map = {
-        "first": "1st", "second": "2nd", "third": "3rd", "fourth": "4th",
-        "fifth": "5th", "sixth": "6th", "seventh": "7th", "eighth": "8th",
-        "ninth": "9th", "tenth": "10th", "eleventh": "11th", "twelfth": "12th",
-        "thirteenth": "13th", "fourteenth": "14th", "fifteenth": "15th",
-        "sixteenth": "16th", "seventeenth": "17th", "eighteenth": "18th",
-        "nineteenth": "19th", "twentieth": "20th",
-        "one": "1", "two": "2", "three": "3", "four": "4", "five": "5",
-        "six": "6", "seven": "7", "eight": "8", "nine": "9", "ten": "10",
-        "eleven": "11", "twelve": "12", "thirteen": "13", "fourteen": "14",
-        "fifteen": "15", "sixteen": "16", "seventeen": "17", "eighteen": "18",
-        "nineteen": "19", "twenty": "20",
-        "twenty one": "21", "twenty two": "22", "twenty three": "23",
-        "twenty four": "24", "twenty five": "25", "twenty six": "26",
+        "first": "1st",
+        "second": "2nd",
+        "third": "3rd",
+        "fourth": "4th",
+        "fifth": "5th",
+        "sixth": "6th",
+        "seventh": "7th",
+        "eighth": "8th",
+        "ninth": "9th",
+        "tenth": "10th",
+        "eleventh": "11th",
+        "twelfth": "12th",
+        "thirteenth": "13th",
+        "fourteenth": "14th",
+        "fifteenth": "15th",
+        "sixteenth": "16th",
+        "seventeenth": "17th",
+        "eighteenth": "18th",
+        "nineteenth": "19th",
+        "twentieth": "20th",
+        "one": "1",
+        "two": "2",
+        "three": "3",
+        "four": "4",
+        "five": "5",
+        "six": "6",
+        "seven": "7",
+        "eight": "8",
+        "nine": "9",
+        "ten": "10",
+        "eleven": "11",
+        "twelve": "12",
+        "thirteen": "13",
+        "fourteen": "14",
+        "fifteen": "15",
+        "sixteen": "16",
+        "seventeen": "17",
+        "eighteen": "18",
+        "nineteen": "19",
+        "twenty": "20",
+        "twenty one": "21",
+        "twenty two": "22",
+        "twenty three": "23",
+        "twenty four": "24",
+        "twenty five": "25",
+        "twenty six": "26",
     }
     return km
 
 
 # ---- Integration tests: query -> expected doc in results ----
 
+
 class TestKeywordMatcherIntegration:
     """Given a query, verify the expected document title appears in find_textual results."""
 
-    @pytest.mark.parametrize("query, expected_titles", [
-        ("14th amendment", ["14th Amendment Section 1", "Amendment"]),
-        ("first amendment", ["1st Amendment"]),
-        ("second amendment", ["2nd Amendment"]),
-        ("4th amendment", ["4th Amendment"]),
-        ("fifth amendment", ["5th Amendment"]),
-        ("10th amendment", ["10th Amendment"]),
-        ("13th amendment", ["13th Amendment Section 1", "Amendment"]),
-        ("supremacy clause", ["Supremacy Clause"]),
-        ("powers of congress", ["Powers of Congress"]),
-    ])
+    @pytest.mark.parametrize(
+        "query, expected_titles",
+        [
+            ("14th amendment", ["14th Amendment Section 1", "Amendment"]),
+            ("first amendment", ["1st Amendment"]),
+            ("second amendment", ["2nd Amendment"]),
+            ("4th amendment", ["4th Amendment"]),
+            ("fifth amendment", ["5th Amendment"]),
+            ("10th amendment", ["10th Amendment"]),
+            ("13th amendment", ["13th Amendment Section 1", "Amendment"]),
+            ("supremacy clause", ["Supremacy Clause"]),
+            ("powers of congress", ["Powers of Congress"]),
+        ],
+    )
     def test_keyword_finds_expected(self, keyword_matcher, query, expected_titles):
         results = keyword_matcher.find_textual(query)
         found_any = any(t in results for t in expected_titles)
-        assert found_any, (
-            f"Expected one of {expected_titles} in results for query '{query}', "
-            f"got: {results}"
-        )
+        assert found_any, f"Expected one of {expected_titles} in results for query '{query}', got: {results}"
 
 
 class TestFixtureDataIntegrity:
@@ -136,17 +167,20 @@ class TestLiveIntegration:
     def rag(self):
         from config import COLLECTION
         from RAG_interface import RAG
+
         return RAG(COLLECTION["US_CONSTITUTION_SET"], debug_mode=False)
 
-    @pytest.mark.parametrize("query, expected_title", [
-        ("14th Amendment equal protection", "14th Amendment Section 1"),
-        ("freedom of speech", "1st Amendment"),
-        ("right to bear arms", "2nd Amendment"),
-    ])
+    @pytest.mark.parametrize(
+        "query, expected_title",
+        [
+            ("14th Amendment equal protection", "14th Amendment Section 1"),
+            ("freedom of speech", "1st Amendment"),
+            ("right to bear arms", "2nd Amendment"),
+        ],
+    )
     def test_live_retrieval(self, rag, query, expected_title):
         results, _ = rag.process_query(query, language="en")
         titles = [doc.get("title", "") for doc, score in results]
         assert expected_title in titles, (
-            f"Expected '{expected_title}' in live results for '{query}', "
-            f"got top-5: {titles[:5]}"
+            f"Expected '{expected_title}' in live results for '{query}', got top-5: {titles[:5]}"
         )

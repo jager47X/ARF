@@ -21,6 +21,7 @@ KNOWLEDGE_JSON_FILES = sorted(KNOWLEDGE_DIR.glob("*.json")) if KNOWLEDGE_DIR.exi
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _load_json(path: Path):
     with open(path, encoding="utf-8") as f:
         return json.load(f)
@@ -49,6 +50,7 @@ def _extract_documents(data: dict) -> list[dict]:
 # 1. Knowledge JSON file-level tests
 # ===========================================================================
 
+
 class TestKnowledgeFilesLoadable:
     """Every JSON file in data/Knowledge/ must be valid JSON."""
 
@@ -71,10 +73,7 @@ class TestKnowledgeFilesLoadable:
 # ===========================================================================
 
 # Files that use the standard {data: {topic: {articles/documents: [...]}}} layout
-STANDARD_KNOWLEDGE_FILES = [
-    p for p in KNOWLEDGE_JSON_FILES
-    if p.name not in ("supreme_court_cases.json",)
-]
+STANDARD_KNOWLEDGE_FILES = [p for p in KNOWLEDGE_JSON_FILES if p.name not in ("supreme_court_cases.json",)]
 
 
 class TestKnowledgeDocumentSchema:
@@ -98,9 +97,7 @@ class TestKnowledgeDocumentSchema:
             pytest.skip(f"{json_path.name} has no documents to validate")
         for i, doc in enumerate(docs):
             assert "clauses" in doc, f"{json_path.name} doc #{i} ('{doc.get('title')}') missing 'clauses'"
-            assert isinstance(doc["clauses"], list), (
-                f"{json_path.name} doc #{i} 'clauses' is not a list"
-            )
+            assert isinstance(doc["clauses"], list), f"{json_path.name} doc #{i} 'clauses' is not a list"
 
     @pytest.mark.parametrize("json_path", STANDARD_KNOWLEDGE_FILES, ids=lambda p: p.name)
     def test_clauses_have_text(self, json_path):
@@ -110,12 +107,8 @@ class TestKnowledgeDocumentSchema:
             pytest.skip(f"{json_path.name} has no documents to validate")
         for doc in docs:
             for clause in doc.get("clauses", []):
-                assert "text" in clause, (
-                    f"{json_path.name} clause in '{doc.get('title')}' missing 'text'"
-                )
-                assert clause["text"].strip(), (
-                    f"{json_path.name} clause in '{doc.get('title')}' has empty text"
-                )
+                assert "text" in clause, f"{json_path.name} clause in '{doc.get('title')}' missing 'text'"
+                assert clause["text"].strip(), f"{json_path.name} clause in '{doc.get('title')}' has empty text"
 
 
 # ===========================================================================
@@ -143,22 +136,19 @@ class TestSupremeCourtCases:
         for category, case_list in cases_data["cases"].items():
             for case in case_list:
                 assert "case" in case, f"Case in '{category}' missing 'case' field"
-                assert "summary" in case, (
-                    f"Case '{case.get('case')}' in '{category}' missing 'summary'"
-                )
+                assert "summary" in case, f"Case '{case.get('case')}' in '{category}' missing 'summary'"
 
     def test_references_are_lists(self, cases_data):
         for category, case_list in cases_data["cases"].items():
             for case in case_list:
                 if "references" in case:
-                    assert isinstance(case["references"], list), (
-                        f"Case '{case.get('case')}' references is not a list"
-                    )
+                    assert isinstance(case["references"], list), f"Case '{case.get('case')}' references is not a list"
 
 
 # ===========================================================================
 # 4. US Constitution test set (CSV)
 # ===========================================================================
+
 
 @pytest.mark.skipif(not TEST_SET_CSV.exists(), reason="us-con-test-set.csv not found")
 class TestUSConTestSet:
@@ -172,28 +162,24 @@ class TestUSConTestSet:
 
     def test_required_columns(self, rows):
         required = {"Question", "Case", "Related to"}
-        assert required.issubset(rows[0].keys()), (
-            f"Missing columns: {required - rows[0].keys()}"
-        )
+        assert required.issubset(rows[0].keys()), f"Missing columns: {required - rows[0].keys()}"
 
     def test_questions_non_empty(self, rows):
         for i, row in enumerate(rows):
-            assert row["Question"].strip(), f"Row {i+2} has empty Question"
+            assert row["Question"].strip(), f"Row {i + 2} has empty Question"
 
     def test_case_values_are_numeric(self, rows):
         for i, row in enumerate(rows):
-            assert row["Case"].strip().isdigit(), (
-                f"Row {i+2} Case='{row['Case']}' is not a digit"
-            )
+            assert row["Case"].strip().isdigit(), f"Row {i + 2} Case='{row['Case']}' is not a digit"
 
     def test_case_values_in_expected_range(self, rows):
         for i, row in enumerate(rows):
             val = int(row["Case"].strip())
-            assert 1 <= val <= 5, f"Row {i+2} Case={val} outside expected range 1-5"
+            assert 1 <= val <= 5, f"Row {i + 2} Case={val} outside expected range 1-5"
 
     def test_related_to_non_empty(self, rows):
         for i, row in enumerate(rows):
-            assert row["Related to"].strip(), f"Row {i+2} has empty 'Related to'"
+            assert row["Related to"].strip(), f"Row {i + 2} has empty 'Related to'"
 
     def test_no_duplicate_questions(self, rows):
         questions = [r["Question"].strip() for r in rows]
@@ -245,6 +231,5 @@ class TestCrossValidation:
         matched = sum(1 for t in test_set_topics if t in knowledge_titles)
         coverage = matched / len(test_set_topics) if test_set_topics else 0
         assert coverage >= 0.5, (
-            f"Only {matched}/{len(test_set_topics)} ({coverage:.0%}) test set topics "
-            f"found in knowledge base titles"
+            f"Only {matched}/{len(test_set_topics)} ({coverage:.0%}) test set topics found in knowledge base titles"
         )

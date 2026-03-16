@@ -16,8 +16,7 @@ try:
     from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 except ImportError:
     print(
-        "ERROR: pydantic is required for config validation. "
-        "Install it with: pip install pydantic>=2.0",
+        "ERROR: pydantic is required for config validation. Install it with: pip install pydantic>=2.0",
         file=sys.stderr,
     )
     raise
@@ -26,6 +25,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Threshold schema
 # ---------------------------------------------------------------------------
+
 
 class DomainThresholds(BaseModel):
     """Thresholds that control the retrieval pipeline for a single domain."""
@@ -40,23 +40,29 @@ class DomainThresholds(BaseModel):
     LLM_SCORE: float = Field(ge=0.0, le=1.0, description="LLM reranking score adjustment")
     HYBRID_SEMANTIC_WEIGHT: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     HYBRID_BM25_WEIGHT: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    # MLP reranker settings (optional — graceful degradation if absent)
+    use_mlp_reranker: Optional[bool] = Field(default=None, description="Toggle MLP reranking stage")
+    mlp_uncertainty_low: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0, description="MLP probability below this = reject"
+    )
+    mlp_uncertainty_high: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0, description="MLP probability above this = accept"
+    )
+    mlp_model_path: Optional[str] = Field(default=None, description="Path to MLP reranker model file")
 
     @model_validator(mode="after")
     def check_threshold_ordering(self) -> "DomainThresholds":
         if self.RAG_SEARCH_min > self.RAG_SEARCH:
-            raise ValueError(
-                f"RAG_SEARCH_min ({self.RAG_SEARCH_min}) must be <= RAG_SEARCH ({self.RAG_SEARCH})"
-            )
+            raise ValueError(f"RAG_SEARCH_min ({self.RAG_SEARCH_min}) must be <= RAG_SEARCH ({self.RAG_SEARCH})")
         if self.LLM_VERIFication > self.RAG_SEARCH:
-            raise ValueError(
-                f"LLM_VERIFication ({self.LLM_VERIFication}) must be <= RAG_SEARCH ({self.RAG_SEARCH})"
-            )
+            raise ValueError(f"LLM_VERIFication ({self.LLM_VERIFication}) must be <= RAG_SEARCH ({self.RAG_SEARCH})")
         return self
 
 
 # ---------------------------------------------------------------------------
 # Field mapping schema
 # ---------------------------------------------------------------------------
+
 
 class FieldMapping(BaseModel):
     title: str = "title"
@@ -73,6 +79,7 @@ class FieldMapping(BaseModel):
 # ---------------------------------------------------------------------------
 # Collection config schema
 # ---------------------------------------------------------------------------
+
 
 class CollectionConfig(BaseModel):
     db_name: str
@@ -105,6 +112,7 @@ class CollectionConfig(BaseModel):
 # ---------------------------------------------------------------------------
 # Public helpers
 # ---------------------------------------------------------------------------
+
 
 def validate_thresholds() -> Dict[str, DomainThresholds]:
     """Validate all DOMAIN_THRESHOLDS from config.py. Returns parsed models."""
