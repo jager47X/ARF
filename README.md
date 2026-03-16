@@ -1,5 +1,7 @@
 # ARF - Advanced Retrieval Framework
 
+[![CI](https://github.com/jager47X/ARF/actions/workflows/ci.yml/badge.svg)](https://github.com/jager47X/ARF/actions/workflows/ci.yml)
+
 **ARF**  (Advanced Retrieval Framework) is a sophisticated Retrieval-Augmented Generation (RAG) system that designed to minimize the cost and hallucination based on R-Flow. I optimized for legal document search and analysis in this use. It provides intelligent semantic search, multi-strategy retrieval, and context-aware document summarization across multiple legal domains.
 
 ## 🚀 Live Demo
