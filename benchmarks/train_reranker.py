@@ -36,7 +36,6 @@ import json
 import logging
 import sys
 import time
-from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -72,86 +71,10 @@ MODEL_CONFIGS = {
 # Feature Generation
 # ======================================================================
 
-def _extract_features_for_pair(
-    query_text: str,
-    doc: dict,
-    vector_score: float,
-    domain: str,
-) -> Dict[str, Any]:
-    """Extract features for a single (query, document) pair.
-
-    Tries to use FeatureExtractor if available; otherwise falls back to
-    a minimal hand-crafted feature set that captures the most important
-    signals for the reranker.
-    """
-    features: Dict[str, float] = {}
-
-    # --- Core retrieval score ---
-    features["vector_score"] = float(vector_score)
-    features["vector_score_sq"] = float(vector_score ** 2)
-
-    # --- Text overlap signals ---
-    query_lower = query_text.lower()
-    title = (doc.get("title") or "").lower()
-    text = (doc.get("text") or doc.get("summary") or "").lower()
-
-    query_tokens = set(query_lower.split())
-    title_tokens = set(title.split())
-    text_tokens = set(text.split()) if text else set()
-
-    # Token overlap ratios
-    if query_tokens:
-        features["title_token_overlap"] = len(query_tokens & title_tokens) / len(query_tokens)
-        features["text_token_overlap"] = len(query_tokens & text_tokens) / len(query_tokens) if text_tokens else 0.0
-    else:
-        features["title_token_overlap"] = 0.0
-        features["text_token_overlap"] = 0.0
-
-    # Exact substring match
-    features["query_in_title"] = 1.0 if query_lower in title else 0.0
-    features["title_in_query"] = 1.0 if title and title in query_lower else 0.0
-
-    # --- Length features ---
-    features["title_length"] = float(len(title.split()))
-    features["query_length"] = float(len(query_lower.split()))
-    features["text_length_log"] = float(np.log1p(len(text.split()))) if text else 0.0
-
-    # --- Structural features ---
-    features["has_article"] = 1.0 if doc.get("article") else 0.0
-    features["has_section"] = 1.0 if doc.get("section") else 0.0
-    features["has_chapter"] = 1.0 if doc.get("chapter") else 0.0
-    features["has_clauses"] = 1.0 if doc.get("clauses") else 0.0
-    features["has_sections_array"] = 1.0 if doc.get("sections") else 0.0
-    features["num_clauses"] = float(len(doc.get("clauses", []) or []))
-    features["num_sections"] = float(len(doc.get("sections", []) or []))
-
-    # --- Domain encoding (one-hot) ---
-    for d in DOMAIN_TO_COLLECTION:
-        features[f"domain_{d}"] = 1.0 if domain == d else 0.0
-
-    # --- Score distribution features (will be filled per-query later) ---
-    features["score_rank"] = 0.0  # placeholder, filled in batch
-    features["score_gap_to_top"] = 0.0  # placeholder
-
-    # Try FeatureExtractor (another agent creates it)
-    try:
-        from rag_dependencies.feature_extractor import FeatureExtractor
-        extractor = FeatureExtractor()
-        extracted = extractor.extract(query_text, doc, vector_score, domain)
-        if isinstance(extracted, dict):
-            # Merge extracted features (they take priority)
-            features.update(extracted)
-    except (ImportError, Exception):
-        pass  # FeatureExtractor not available yet — use hand-crafted features
-
-    return features
-
-
-def _features_to_vector(features: Dict[str, float]) -> Tuple[List[float], List[str]]:
-    """Convert a feature dict to a sorted numeric vector + ordered name list."""
-    names = sorted(features.keys())
-    vector = [float(features.get(n, 0.0)) for n in names]
-    return vector, names
+def _get_extractor(config: dict, domain: str):
+    """Get or create a FeatureExtractor for the given domain."""
+    from rag_dependencies.feature_extractor import FeatureExtractor
+    return FeatureExtractor(config=config, domain=domain)
 
 
 def generate_features_for_query(
@@ -161,22 +84,27 @@ def generate_features_for_query(
 ) -> List[Dict[str, Any]]:
     """Generate labelled feature rows for a single benchmark query.
 
-    Runs vector search, then labels each candidate:
-        - label=1 if candidate title is in expected_titles with relevance >= 2
-        - label=0 otherwise (negatives)
+    Uses FeatureExtractor for consistent 15-dimensional feature vectors.
+    Labels each candidate based on expected_docs relevance.
 
-    Returns list of dicts with keys: vector, label, query_id, domain, title, score.
+    Returns list of dicts with keys: vector, feature_names, label, query_id, domain, title, score.
     """
+    from rag_dependencies.feature_extractor import FeatureExtractor
+
     query_text = query_entry["query"]
-    expected_titles = set(query_entry.get("expected_titles", []))
-    # For benchmark_queries.json format — default relevance=3 for expected docs
-    expected_relevance = {t: query_entry.get("relevance", {}).get(t, 3) for t in expected_titles}
+    # Support both formats:
+    # eval_dataset.json: expected_docs=[{"title": "...", "relevance": 3}, ...]
+    # benchmark_queries.json: expected_titles=["...", ...]
+    expected_docs = query_entry.get("expected_docs", [])
+    if expected_docs and isinstance(expected_docs[0], dict):
+        expected_titles = set(d["title"] for d in expected_docs)
+        expected_relevance = {d["title"]: d.get("relevance", 3) for d in expected_docs}
+    else:
+        expected_titles = set(query_entry.get("expected_titles", []))
+        expected_relevance = {t: 3 for t in expected_titles}
 
     try:
-        # Generate embedding
         vec = rag_instance.query_manager.get_embedding(query_text)
-
-        # Run vector search to get candidates
         if hasattr(rag_instance, "vector_search") and rag_instance.vector_search:
             results = rag_instance.vector_search.search_main.search_similar(vec, k=20)
         else:
@@ -185,33 +113,52 @@ def generate_features_for_query(
         if not results:
             logger.warning("No vector search results for query: %s", query_text[:60])
             return []
-
     except Exception as e:
         logger.error("Feature generation failed for %s: %s", query_entry.get("id", "?"), e)
         return []
 
-    # Extract features for each candidate
+    # Use FeatureExtractor for consistent features
+    extractor = FeatureExtractor(config=rag_instance.config, domain=domain)
+    query_emb = list(vec) if not isinstance(vec, list) else vec
+
+    # Get keyword/alias matches for richer features
+    kw_matches = rag_instance.keyword.find_textual(query_text) if hasattr(rag_instance, 'keyword') and rag_instance.keyword else []
+    alias_matches = []
+    if hasattr(rag_instance, 'alias') and rag_instance.alias:
+        try:
+            alias_matches = rag_instance.alias.find_semantic_aliases(query_text, rag_instance.query_manager)
+        except Exception:
+            pass
+
+    features_batch = extractor.extract_batch(
+        query=query_text,
+        results=results,
+        query_embedding=query_emb,
+        keyword_matches=kw_matches,
+        alias_matches=alias_matches,
+    )
+
+    feature_names = FeatureExtractor.feature_names()
     rows = []
-    top_score = results[0][1] if results else 0.0
-
-    for rank, (doc, score) in enumerate(results):
+    for i, (feat_dict, (doc, score)) in enumerate(zip(features_batch, results)):
         title = doc.get("title", "")
-        features = _extract_features_for_pair(query_text, doc, score, domain)
-        features["score_rank"] = float(rank)
-        features["score_gap_to_top"] = float(top_score - score)
-
-        vector, names = _features_to_vector(features)
+        vector = extractor.to_vector(feat_dict)
 
         # Label: 1 if title matches an expected doc with relevance >= 2
+        # Support prefix match (e.g., "19th Amendment" matches "19th Amendment Section 1")
+        matched_relevance = 0
         if title in expected_titles:
-            relevance = expected_relevance.get(title, 3)
-            label = 1 if relevance >= 2 else 0
+            matched_relevance = expected_relevance.get(title, 3)
         else:
-            label = 0
+            for exp_title in expected_titles:
+                if title.startswith(exp_title) or exp_title.startswith(title):
+                    matched_relevance = expected_relevance.get(exp_title, 3)
+                    break
+        label = 1 if matched_relevance >= 2 else 0
 
         rows.append({
             "vector": vector,
-            "feature_names": names,
+            "feature_names": feature_names,
             "label": label,
             "query_id": query_entry.get("id", ""),
             "domain": domain,
@@ -321,15 +268,15 @@ def cross_validate_model(
     Uses StratifiedKFold on the label to ensure balanced splits.
     Reports per-domain breakdowns when multiple domains are present.
     """
-    from sklearn.preprocessing import StandardScaler
-    from sklearn.model_selection import StratifiedKFold
     from sklearn.metrics import (
         accuracy_score,
+        f1_score,
         precision_score,
         recall_score,
-        f1_score,
         roc_auc_score,
     )
+    from sklearn.model_selection import StratifiedKFold
+    from sklearn.preprocessing import StandardScaler
 
     logger.info("Cross-validating %s (samples=%d, features=%d)...", model_name, X.shape[0], X.shape[1])
 
@@ -635,7 +582,7 @@ def main():
 
     comparison_results, best_model_name = compare_models(X, y, domains, n_splits=args.n_splits)
 
-    print(f"\n  Model Comparison Results:")
+    print("\n  Model Comparison Results:")
     print(f"  {'Model':<30} {'F1':>8} {'AUC':>8} {'Prec':>8} {'Recall':>8} {'Acc':>8}")
     print(f"  {'-'*78}")
     for r in comparison_results:
@@ -701,7 +648,7 @@ def main():
     print("  Computing feature importance...")
     feature_importance = compute_feature_importance(X, y, feature_names)
     if feature_importance:
-        print(f"  Top 5 features:")
+        print("  Top 5 features:")
         for fi in feature_importance[:5]:
             print(f"    {fi['feature']:<30} importance={fi['importance_mean']:.4f}")
 

@@ -18,7 +18,6 @@ from rag_dependencies.feature_extractor import (
     _get_document_text,
     _has_nested,
     _jaccard_similarity,
-    _match_type,
     _section_depth,
     _tokenize,
 )

@@ -3,7 +3,6 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-from pymongo import MongoClient
 
 # Global variable to track if env has been loaded
 _env_loaded = False
@@ -159,6 +158,10 @@ DOMAIN_THRESHOLDS = {
         "confident": 0.85, #saves  the summaries only above this threshold
         "FILTER_GAP": 0.20,  # if there is higer gap comapre to the top result dont show the
         "LLM_SCORE": 0.10,
+        "use_mlp_reranker": True,  # Toggle MLP reranking
+        "mlp_uncertainty_low": 0.4,  # Below this = reject
+        "mlp_uncertainty_high": 0.6,  # Above this = accept
+        "mlp_model_path": "models/mlp_reranker.joblib",
     },
     "code_of_federal_regulations": {
         "query_search": 0.65,            # Fixed — do not tune automatically
@@ -169,6 +172,10 @@ DOMAIN_THRESHOLDS = {
         "confident": 0.85, #saves  the summaries only above this threshold
         "FILTER_GAP": 0.20,  # if there is higer gap comapre to the top result dont show the
         "LLM_SCORE": 0.10,
+        "use_mlp_reranker": True,  # Toggle MLP reranking
+        "mlp_uncertainty_low": 0.4,  # Below this = reject
+        "mlp_uncertainty_high": 0.6,  # Above this = accept
+        "mlp_model_path": "models/mlp_reranker.joblib",
     },
     "us_code": {
         "query_search": 0.65,            # Fixed — do not tune automatically
@@ -179,6 +186,10 @@ DOMAIN_THRESHOLDS = {
         "confident": 0.85, #saves  the summaries only above this threshold
         "FILTER_GAP": 0.20,  # if there is higer gap comapre to the top result dont show the
         "LLM_SCORE": 0.10,
+        "use_mlp_reranker": True,  # Toggle MLP reranking
+        "mlp_uncertainty_low": 0.4,  # Below this = reject
+        "mlp_uncertainty_high": 0.6,  # Above this = accept
+        "mlp_model_path": "models/mlp_reranker.joblib",
     },
     "uscis_policy": {
         "query_search": 0.65,            # Fixed — do not tune automatically
@@ -189,6 +200,10 @@ DOMAIN_THRESHOLDS = {
         "confident": 0.85, #saves  the summaries only above this threshold
         "FILTER_GAP": 0.20,  # if there is higer gap comapre to the top result dont show the
         "LLM_SCORE": 0.10,
+        "use_mlp_reranker": True,  # Toggle MLP reranking
+        "mlp_uncertainty_low": 0.4,  # Below this = reject
+        "mlp_uncertainty_high": 0.6,  # Above this = accept
+        "mlp_model_path": "models/mlp_reranker.joblib",
     }
 }
 #
