@@ -93,20 +93,60 @@ ARF/
 
 ### Query Processing Flow
 
-1. **Query Input**: User query with optional filters (jurisdiction, language, case filters)
-2. **Query Normalization**: Text normalization, pattern matching, domain detection
-3. **Multi-Strategy Search**:
-   - Semantic vector search (primary)
-   - Alias search (if enabled)
-   - Keyword matching (if enabled)
-   - Exact pattern matching
-4. **Result Filtering**:
-   - Threshold-based filtering (domain-specific)
-   - LLM reranking for borderline results
-   - Gap filtering to remove outliers
-5. **Result Ranking**: Score-based ranking with bias adjustments
-6. **Summary Generation**: LLM-powered document summaries (cached for reuse)
-7. **Response Formatting**: Bilingual response generation
+```mermaid
+flowchart TD
+    A["User Query\n(en / es)"] --> B{"Language?"}
+    B -- es --> C["Translate to English"]
+    B -- en --> D["Normalize Query"]
+    C --> D
+
+    D --> E["Get / Create Embedding\n(Voyage-3-large, 1024d)"]
+    E --> F{"Cached results\nexist?"}
+    F -- yes --> G["Return cached results\n(skip all LLM calls)"]
+
+    F -- no --> H["OpenAI Omni\nModeration Check"]
+    H -- flagged --> I["Reject query"]
+    H -- pass --> J["fix_query via LLM"]
+
+    J --> K["Multi-Strategy Search"]
+
+    K --> K1["Semantic Vector Search\n(MongoDB Atlas)"]
+    K --> K2{"Alias search\nenabled?"}
+    K --> K3{"Keyword matcher\nenabled?"}
+    K2 -- yes --> K2a["Alias Embedding\nCosine Similarity"]
+    K3 -- yes --> K3a["Article / Section\nPattern Match"]
+
+    K1 --> L["Merge & Score"]
+    K2a --> L
+    K3a --> L
+
+    L --> M{"score >= RAG_SEARCH\n(0.85)?"}
+    M -- yes --> N["Accept result"]
+    M -- no --> O{"score >= LLM_VERIF\n(0.70)?"}
+    O -- yes --> P["LLM Reranking\n(borderline verification)"]
+    O -- no --> Q{"Rephrase\nattempts left?"}
+    P -- verified --> N
+    P -- rejected --> Q
+    Q -- yes --> R["Rephrase query\nvia LLM"] --> E
+    Q -- no --> S["Return empty"]
+
+    N --> T{"score >= confident\n(0.85)?"}
+    T -- yes --> U["Cache results +\nGenerate & cache summary"]
+    T -- no --> V["Return results\n(no cache)"]
+    U --> W["Gap Filter\n(remove outliers)"]
+    V --> W
+    W --> X["Return ranked results\n+ bilingual summary"]
+```
+
+#### Flow summary
+
+1. **Query Input** — user query with optional filters (jurisdiction, language, case filters)
+2. **Query Normalization** — text normalization, pattern matching, domain detection
+3. **Multi-Strategy Search** — semantic vector search (primary), alias search (if enabled), keyword matching (if enabled), exact pattern matching
+4. **Result Filtering** — threshold-based filtering (domain-specific), LLM reranking for borderline results, gap filtering to remove outliers
+5. **Result Ranking** — score-based ranking with bias adjustments
+6. **Summary Generation** — LLM-powered document summaries (cached for reuse)
+7. **Response Formatting** — bilingual response generation
 
 ## Installation
 
