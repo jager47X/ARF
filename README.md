@@ -459,38 +459,10 @@ Measured on 15 US Constitution benchmark queries. Each strategy runs in its **ow
 
 ### Cost Analysis
 
-Measured by instrumenting every external API call across 200 live queries (20 unique + 180 similar). Run `python benchmarks/run_cost_analysis.py --production` to reproduce.
-
-#### Measured Results (200 queries)
-
-| | Cold (20 unique) | Similar (180 rephrased) | Total (200) |
-|---|---|---|---|
-| **Voyage embed calls** | 0 (all cached) | 197 (1.09/query) | 197 |
-| **Voyage texts embedded** | 0 | 9,180 (~47/call) | 9,180 |
-| **OpenAI chat calls** | 0 | 0 | **0** |
-| **OpenAI moderation calls** | 0 | 0 | **0** |
-| **Cache hit rate** | **100%** (20/20) | **29%** (52/180) | **36%** |
-| **Avg latency** | **335 ms** (in-memory cache) | 19,368 ms | 17,499 ms |
-| **P50 latency** | — | — | 18,666 ms |
-| **API cost** | **$0.00** | $0.000926 | **$0.000926** |
-| **Cost/query** | **$0.000000** | $0.000005 | **$0.000005** |
-
 > **Key findings from real measurement:**
 > - **Cached queries cost $0.00** — zero API calls, **335ms avg latency** with in-memory cache (280ms min). All 20 "cold" queries hit cache from prior runs.
 > - **Similar queries mostly miss cache** (29% hit rate) — rephrased queries go through the full pipeline including Voyage batch embedding (~47 texts/call for alias search). OpenAI chat/moderation calls were **zero** on this run because threshold gates resolved all queries without LLM reranking.
 > - **Voyage embedding is the only cost** — $0.000926 total for 200 queries. The batch embedding (~47 texts/call) is the real cost driver, not LLM calls.
-
-#### Per-Query API Cost Breakdown
-
-| Component | Price | Cold/Cached | New Query |
-|-----------|-------|-------------|-----------|
-| Voyage embed (~47 texts × ~25 tok) | $0.06/1M tokens | $0.000000 | ~$0.000005 |
-| OpenAI moderation | ~$0.001/call | $0.000000 | $0.000000* |
-| OpenAI LLM rerank | $2.50/1M input | $0.000000 | $0.000000* |
-| MLP reranker (local) | $0.00 | $0.000000 | $0.000000 |
-| **Total** | | **$0.000000** | **~$0.000005** |
-
-*\*Zero on this benchmark. Moderation fires on first-time queries when cache is empty. LLM reranking fires on ~15-25% of production queries with borderline scores.*
 
 #### Cost at Scale (Measured + Extrapolated)
 
