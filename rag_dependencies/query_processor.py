@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
+import openai
 from bson import ObjectId
+from pymongo.errors import PyMongoError
 
 logger = logging.getLogger(__name__)
 Doc = Dict[str, Any]
@@ -105,7 +107,7 @@ class QueryProcessor:
                 else:
                     self.mlp_reranker = None
                     logger.info("[RAG][MLP] MLP model not loaded -- falling back to LLM verification only")
-            except Exception as e:
+            except (ImportError, FileNotFoundError, OSError, ValueError) as e:
                 self.mlp_reranker = None
                 self.feature_extractor = None
                 logger.info("[RAG][MLP] MLP reranker unavailable: %s -- falling back to LLM verification only", e)
@@ -149,7 +151,6 @@ class QueryProcessor:
 
         # Use translated query for search, but return original in response
         current_text = search_query
-        root_original_text = search_query
         seen_norm = {self.db.normalize_query(search_query)}
         previous_rephrases: List[str] = []
         current_decay = 0.0
@@ -297,7 +298,7 @@ class QueryProcessor:
                         # Track cache hit on the English query (or original if not Spanish)
                         norm_query = self.db.normalize_query(state["final_text"])
                         self.db.track_query_cache_hit(norm_query, cache_type="query", language="en")
-                except Exception as e:
+                except PyMongoError as e:
                     logger.debug(f"[RAG][TRACK] Failed to track query cache hit: {e}")
 
                 cached_with_scores: List[Tuple[dict, float]] = []
@@ -312,7 +313,7 @@ class QueryProcessor:
                     if isinstance(res, dict) and "score" in res:
                         try:
                             score = float(res["score"])
-                        except Exception:
+                        except (ValueError, TypeError):
                             score = 1.0
                     scores.append(score)
 
@@ -340,7 +341,7 @@ class QueryProcessor:
                             for idx in kid_to_index.get(kid_str, []):
                                 enriched_docs[idx] = full_doc
                         logger.info("[RAG][CACHE][ENRICH] batch-fetched %d docs by knowledge_id", len(oids))
-                    except Exception as e:
+                    except PyMongoError as e:
                         logger.warning("[RAG][CACHE][ENRICH] batch fetch failed: %s", e)
 
                 # Batch fetch by title (fallback, single query)
@@ -357,7 +358,7 @@ class QueryProcessor:
                             for idx in title_to_index.get(doc_title, []):
                                 enriched_docs[idx] = full_doc
                         logger.info("[RAG][CACHE][ENRICH] batch-fetched %d docs by title", len(titles))
-                    except Exception as e:
+                    except PyMongoError as e:
                         logger.warning("[RAG][CACHE][ENRICH] batch title fetch failed: %s", e)
 
                 # Build final list
@@ -439,7 +440,7 @@ class QueryProcessor:
                                 "[RAG][SAFETY][STORE] Stored rejected query in MongoDB: %r",
                                 norm_query,
                             )
-                        except Exception as e:
+                        except PyMongoError as e:
                             logger.exception(
                                 "[RAG][SAFETY][STORE][ERROR] Failed to store rejected query: %s",
                                 e,
@@ -448,7 +449,7 @@ class QueryProcessor:
                         return ([], self._original_query or current_text)
                     else:
                         logger.info("[RAG][SAFETY][PASS] Query passed OpenAI Omni check")
-                except Exception as e:
+                except (openai.OpenAIError, ValueError, KeyError) as e:
                     logger.exception(
                         "[RAG][SAFETY][ERROR] Failed to run moderation check: %s", e
                     )
@@ -518,7 +519,7 @@ class QueryProcessor:
                                 }
                             }
                             return ([(general_info_result, 0.0)], current_text)
-                        except Exception as e:
+                        except (openai.OpenAIError, ValueError, KeyError) as e:
                             logger.exception(
                                 "[RAG][TOPIC][GENERAL_INFO][ERROR] Failed to generate general info: %s", e
                             )
@@ -565,7 +566,7 @@ class QueryProcessor:
                         logger.info(
                             "[RAG][FIX][APPLY] current_text=%r", current_text
                         )
-                except Exception as e:
+                except (openai.OpenAIError, ValueError, KeyError) as e:
                     logger.exception(
                         "[RAG][TOPIC][ERROR] Failed to check US Constitution relevance: %s", e
                     )
@@ -623,7 +624,7 @@ class QueryProcessor:
                         verified_cases = [(cd, sc) for (cd, sc) in vm if (sc + CASES_LLM_SCORE) >= CASES_RAG_SEARCH]
                         if verified_cases:
                             logger.info("[RAG][CASES] verified_accept +bump\n%s", self._fmt_pairs(verified_cases))
-                    except Exception as e:
+                    except (openai.OpenAIError, ValueError) as e:
                         logger.info("[RAG][CASES] verify_many_parallel failed: %s", e)
 
                 accepted_cases = direct_cases + verified_cases
@@ -1128,7 +1129,7 @@ class QueryProcessor:
                 logger.info("[LIGHT][STORE] Cached %d results (including %d high-confidence >= %.2f) + search range (%d case IDs)",
                            len(cacheable_results), high_conf_count, confident_threshold,
                            len(current_case_ids) if current_case_ids else 0)
-            except Exception as e:
+            except PyMongoError as e:
                 logger.exception("[LIGHT][STORE] Failed to cache results: %s", e)
 
         logger.info(
@@ -1297,7 +1298,7 @@ class QueryProcessor:
                     {"_id": oid},
                     {"text_embedding": 0, "summary_embedding": 0},
                 )
-            except Exception:
+            except PyMongoError:
                 logger.exception(
                     "[INSIGHTIDX] fetch main by id failed: %s", oid
                 )
@@ -1319,7 +1320,7 @@ class QueryProcessor:
                         title,
                     )
                 return doc
-            except Exception:
+            except PyMongoError:
                 logger.exception("[INSIGHTIDX] fetch main by %s failed", key)
                 return None
 
@@ -1577,12 +1578,12 @@ class QueryProcessor:
                     # Track insight cache hit
                     try:
                         self.db.track_query_cache_hit(check_query, cache_type="insight")
-                    except Exception as e:
+                    except PyMongoError as e:
                         logger.debug(f"[INSIGHTIDX][TRACK] Failed to track insight cache hit: {e}")
                     # Fix 4: Also cache in request-level cache for consistency
                     self._request_insight_cache[cache_key] = txt
                     return txt  # Return immediately when match found
-            except Exception as e:
+            except (PyMongoError, ValueError, TypeError) as e:
                 logger.debug("[INSIGHTIDX][CACHE] read failed for query=%r: %s", check_query, e)
                 continue
 
@@ -1689,7 +1690,7 @@ class QueryProcessor:
                         ).strip()
                         b = (main_doc.get("summary") or main_doc.get("text") or "").strip()[:400]
                         return (f"{t} is related because it frames the key authority at issue. " + b).strip()
-            except Exception as e:
+            except (openai.OpenAIError, ValueError, KeyError) as e:
                 logger.exception("[INSIGHTIDX] LLM insight_explain (English) failed: %s", e)
                 return ""
 
@@ -1724,7 +1725,7 @@ class QueryProcessor:
                         # Fallback: translate English insight
                         from services.rag.rag_dependencies.ai_service import translate_insight
                         return translate_insight(insight_en, "en", "es") or ""
-            except Exception as e:
+            except (openai.OpenAIError, ValueError, KeyError) as e:
                 logger.exception("[INSIGHTIDX] LLM insight_explain (Spanish) failed: %s", e)
                 return ""
 
@@ -1790,7 +1791,7 @@ class QueryProcessor:
                         "[INSIGHTIDX][SAVE] No results found for query=%r or rephrase chain; not saving insight",
                         norm_query,
                     )
-        except Exception:
+        except PyMongoError:
             logger.exception("[INSIGHTIDX][SAVE] failed")
 
         # Fix 4: Cache the generated insight in request-level cache
@@ -1886,7 +1887,7 @@ class QueryProcessor:
             if self.qm.check_query_has_results(self.db, current_text):
                 logging.info("[RAG][SUMMARY] results already exist for %r — skipping save.", current_text)
                 return
-        except Exception:
+        except PyMongoError:
             logging.exception("[RAG][SUMMARY] check_query_has_results failed; proceeding cautiously.")
 
         def _extract_pair(item: Any) -> Tuple[dict | None, float | None]:
@@ -1906,7 +1907,7 @@ class QueryProcessor:
                     doc = self.db.main.find_one({"_id": item}, {"_id": 1, "title": 1})
                     if doc:
                         return doc, 0.0
-                except Exception:
+                except PyMongoError:
                     logging.exception("[RAG][SUMMARY] failed to fetch doc for ObjectId %s", str(item))
                 return None, None
 
@@ -1943,7 +1944,7 @@ class QueryProcessor:
             collection_key = self.cfg.get("collection_key")
             self.qm.update_query_with_results(self.db, current_text, payload, collection_key=collection_key)
             logging.info("[RAG][SUMMARY] saved %d confident_results for %r.", len(confident_results), current_text)
-        except Exception:
+        except PyMongoError:
             logging.exception("[RAG][SUMMARY] failed to save confident_results.")
 
     def _cases_to_main_by_references(self, case_pairs: List[Tuple[dict, float]]) -> List[Tuple[dict, float]]:
@@ -2089,7 +2090,7 @@ class QueryProcessor:
                         _loader(self.db)
                         # FIX: self.alias reference
                         logger.info("[ALIAS] cache loaded: %d entries", len(getattr(self.alias, "alias_cache", [])))
-                    except Exception as e:
+                    except (PyMongoError, ValueError) as e:
                         logger.warning("[ALIAS] cache load failed: %s", e)
                 else:
                     logger.warning("[ALIAS] no cache loader found; alias search may be empty")
@@ -2350,7 +2351,8 @@ class QueryProcessor:
                 or d.get("case")
             )
             if k is None:
-                art = d.get("article"); sec = d.get("section")
+                art = d.get("article")
+                sec = d.get("section")
                 if art or sec:
                     k = (art, sec)
             # last resort: object identity so distinct dicts never merge
@@ -2427,7 +2429,7 @@ class QueryProcessor:
                         if score < self.RAG_SEARCH:
                             logger.info("[RAG][LLM_VERIFY][DETAIL] FAILED: title=%r score=%.4f < %.3f",
                                        doc.get("title", "N/A"), score, self.RAG_SEARCH)
-                except Exception as e:
+                except (openai.OpenAIError, ValueError) as e:
                     logger.info("[RAG][MAIN] verify_many_parallel failed: %s", e)
 
             # Combine MLP-accepted candidates with LLM-verified candidates

@@ -74,7 +74,7 @@ def export_recent_judgments(
     Looks in the User_queries collection for queries that have results
     with LLM verification scores, processed within the lookback window.
     """
-    from config import COLLECTION, QUERY_COLLECTION_NAME, MONGO_URI, load_environment
+    from config import MONGO_URI, QUERY_COLLECTION_NAME, load_environment
     load_environment(env)
 
     from pymongo import MongoClient
@@ -298,8 +298,9 @@ def retrain_and_validate(
     Returns:
         (new_reranker, metrics_report) -- reranker is None if old model is better
     """
-    from sklearn.model_selection import train_test_split
     from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
+    from sklearn.model_selection import train_test_split
+
     from rag_dependencies.mlp_reranker import MLPReranker
 
     feature_names = rows[0]["feature_names"]
@@ -511,7 +512,7 @@ def main():
         merged_rows, args.model_path,
     )
 
-    print(f"\n  Validation Results:")
+    print("\n  Validation Results:")
     print(f"    Old model F1:   {report['old_metrics'].get('f1', 'N/A')}")
     print(f"    New model F1:   {report['new_metrics']['f1']}")
     print(f"    Improved:       {report['improved']}")
@@ -541,10 +542,10 @@ def main():
         forced_reranker.train(X, y_arr, hidden_layer_sizes=(128, 64, 32), calibrate=True,
                               feature_names=merged_rows[0]["feature_names"])
         forced_reranker.save(args.model_path)
-        print(f"\n  Step 6: FORCE deployed new model (metrics decreased)")
+        print("\n  Step 6: FORCE deployed new model (metrics decreased)")
         deploy_status = "force_deployed"
     else:
-        print(f"\n  Step 6: Skipping deployment (old model is better)")
+        print("\n  Step 6: Skipping deployment (old model is better)")
         deploy_status = "skipped_no_improvement"
 
     # Step 7: Log
