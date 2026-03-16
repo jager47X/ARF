@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-ARF Ablation Study — Compare retrieval strategies.
+ARF Benchmark — Compare retrieval strategies in isolated environments.
 
-Runs the same benchmark queries under different retrieval configurations:
-  1. MongoDB Atlas Semantic Only — raw $vectorSearch, no reranking/alias/keyword
-  2. MongoDB Atlas Hybrid — semantic + keyword/alias matching (no LLM rerank)
-  3. Full ARF Pipeline — semantic + keyword/alias + LLM reranking + rephrasing + caching
-  4. Full ARF Pipeline (with 50% duplicate queries) — measures cache hit latency
+Each strategy runs in its own isolated context:
+  1. MongoDB Atlas (Semantic Only) — direct $vectorSearch, fresh embedding per query
+  2. MongoDB Atlas (Hybrid) — $vectorSearch + keyword matching, no caching
+  3. Full ARF Pipeline — first pass (cold, builds cache)
+  4. Full ARF Pipeline — second pass with similar queries (~1 word changed)
+     to demonstrate cache speed + accuracy improvement over time
 
 Usage:
     python benchmarks/run_ablation.py --production
@@ -24,9 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import standalone_setup  # noqa: F401
-
 from benchmarks.metrics import compute_all_metrics, mrr
-from benchmarks.cost_tracker import CostTracker
 
 BENCHMARK_FILE = Path(__file__).parent / "benchmark_queries.json"
 RESULTS_DIR = Path(__file__).parent / "results"
@@ -38,6 +37,40 @@ DOMAIN_TO_COLLECTION = {
     "uscis_policy": "USCIS_POLICY_SET",
 }
 
+# Slightly rephrased queries (~1 word changed, ~90% embedding similarity)
+SIMILAR_MAP = {
+    "What does the 14th Amendment say about equal protection?":
+        "What does the 14th Amendment mention about equal protection?",
+    "freedom of speech":
+        "freedom of expression",
+    "right to bear arms":
+        "right to carry arms",
+    "unreasonable search and seizure":
+        "unreasonable search and arrest",
+    "double jeopardy due process":
+        "double jeopardy fair process",
+    "powers not delegated to the federal government":
+        "powers not granted to the federal government",
+    "abolition of slavery":
+        "elimination of slavery",
+    "supremacy clause federal law preemption":
+        "supremacy clause federal law priority",
+    "congressional power to tax and regulate commerce":
+        "congressional authority to tax and regulate commerce",
+    "Article 1 Section 8":
+        "Article I Section 8",
+    "presidential executive power":
+        "presidential executive authority",
+    "14th amendment":
+        "fourteenth amendment",
+    "first amendment rights":
+        "first amendment freedoms",
+    "immigration naturalization law":
+        "immigration naturalization statute",
+    "citizen rights privileges immunities":
+        "citizen rights privileges protections",
+}
+
 
 def load_queries(domain: str = None) -> list:
     with open(BENCHMARK_FILE) as f:
@@ -45,177 +78,93 @@ def load_queries(domain: str = None) -> list:
     queries = data["queries"]
     if domain:
         queries = [q for q in queries if q["domain"] == domain]
-    # Only queries with expected titles
     return [q for q in queries if q.get("expected_titles")]
 
 
-def build_duplicate_set(queries: list, seed: int = 42) -> tuple:
-    """
-    Build a query set with 50% random duplicates appended.
-    Returns (full_query_list, duplicate_ids_set).
-    """
+def pick_similar(queries: list, seed: int = 42) -> list:
     rng = random.Random(seed)
-    n_dup = len(queries) // 2
-    duplicates = rng.sample(queries, k=min(n_dup, len(queries)))
-    dup_ids = {q["id"] for q in duplicates}
-    # Tag duplicates
-    tagged = []
-    for q in duplicates:
-        tagged.append({**q, "id": q["id"] + "-DUP", "_is_duplicate": True})
-    full = queries + tagged
-    return full, dup_ids
+    n = max(1, len(queries) // 2)
+    picked = rng.sample(queries, k=min(n, len(queries)))
+    return [{
+        **q,
+        "id": q["id"] + "-SIM",
+        "query": SIMILAR_MAP.get(q["query"], q["query"] + " law"),
+        "original_query": q["query"],
+        "_is_similar": True,
+    } for q in picked]
 
 
-def _run_strategy(rag, queries: list, mode: str) -> dict:
-    """
-    Run queries through a specific retrieval mode.
-    mode: 'semantic' | 'hybrid' | 'full'
-    """
+def _run_and_collect(queries, run_fn, label=""):
+    """Run queries through a function, collect results with metrics."""
     results = []
-    tracker = CostTracker()
-
     for q in queries:
-        is_dup = q.get("_is_duplicate", False)
-        tracker.start_query(q["query"])
+        is_sim = q.get("_is_similar", False)
         start = time.time()
         expected = set(q["expected_titles"])
-        retrieved = []
 
         try:
-            if mode == "semantic":
-                emb = rag.query_manager.get_embedding(q["query"])
-                tracker.record_embedding_call(tokens=128)
-                raw = rag.vector_search.search_main.search_similar(emb, k=10)
-                retrieved = [doc.get("title", "") for doc, score in (raw or [])]
-
-            elif mode == "hybrid":
-                emb = rag.query_manager.get_embedding(q["query"])
-                tracker.record_embedding_call(tokens=128)
-                raw = rag.vector_search.search_main.search_similar(emb, k=10)
-                sem_results = raw or []
-                kw_titles = []
-                if rag.keyword:
-                    kw_titles = rag.keyword.find_textual(q["query"])
-                title_scores = {}
-                for doc, score in sem_results:
-                    title = doc.get("title", "")
-                    title_scores[title] = max(title_scores.get(title, 0), score)
-                for kw_title in kw_titles:
-                    if kw_title not in title_scores:
-                        title_scores[kw_title] = 0.70
-                    else:
-                        title_scores[kw_title] = min(1.0, title_scores[kw_title] + 0.05)
-                ranked = sorted(title_scores.items(), key=lambda x: x[1], reverse=True)
-                retrieved = [title for title, _ in ranked]
-
-            elif mode == "full":
-                pipeline_results, _ = rag.process_query(q["query"], language="en")
-                retrieved = [doc.get("title", "") for doc, score in pipeline_results]
-                # Check if cache was used
-                if pipeline_results:
-                    tracker.record_cache_hit() if is_dup else tracker.record_cache_miss()
-                else:
-                    tracker.record_cache_miss()
-
+            retrieved = run_fn(q["query"])
         except Exception as e:
             print(f"    ERROR {q['id']}: {e}")
             retrieved = []
 
-        elapsed = time.time() - start
-        cost = tracker.end_query()
+        elapsed_ms = (time.time() - start) * 1000
         metrics = compute_all_metrics(retrieved, expected)
 
-        dup_tag = " [CACHED]" if is_dup else ""
         results.append({
             "id": q["id"],
             "query": q["query"],
-            "is_duplicate": is_dup,
+            "is_similar": is_sim,
             "retrieved_top5": retrieved[:5],
             "metrics": metrics,
-            "latency_s": round(elapsed, 3),
+            "latency_ms": round(elapsed_ms, 0),
         })
 
         rr = metrics.get("rr", 0)
         status = "HIT" if rr > 0 else "MISS"
-        print(f"    {q['id']}: {status} (RR={rr:.2f}, {elapsed*1000:.0f}ms){dup_tag} — {q['query'][:45]}")
+        tag = " [SIMILAR]" if is_sim else ""
+        print(f"    {q['id']}: {status} (RR={rr:.2f}, {elapsed_ms:.0f}ms){tag} — {q['query'][:45]}")
 
-    return _aggregate_with_splits(results, tracker)
+    return results
 
 
-def _aggregate_with_splits(results: list, tracker: CostTracker = None) -> dict:
-    """Aggregate metrics, splitting unique vs duplicate queries."""
-    unique = [r for r in results if not r.get("is_duplicate")]
-    dups = [r for r in results if r.get("is_duplicate")]
+def _agg(results):
+    if not results:
+        return {}
     n = len(results)
-
-    def _agg(subset):
-        if not subset:
-            return {}
-        nn = len(subset)
-        mean = lambda key: round(sum(r["metrics"].get(key, 0) for r in subset) / nn, 3)
-        all_rr = [r["metrics"].get("rr", 0) for r in subset]
-        return {
-            "total": nn,
-            "mrr": round(sum(all_rr) / nn, 3),
-            "p@1": mean("p@1"),
-            "p@5": mean("p@5"),
-            "r@5": mean("r@5"),
-            "r@10": mean("r@10"),
-            "ndcg@5": mean("ndcg@5"),
-            "avg_latency_ms": round(sum(r["latency_s"] for r in subset) / nn * 1000, 0),
-        }
-
-    agg = _agg(results)
-    agg["unique_queries"] = _agg(unique)
-    agg["duplicate_queries"] = _agg(dups) if dups else {}
-    agg["details"] = results
-
-    if tracker:
-        agg["cost"] = tracker.summary()
-
-    return agg
+    all_rr = [r["metrics"].get("rr", 0) for r in results]
+    def mean(key):
+        return round(sum(r["metrics"].get(key, 0) for r in results) / n, 3)
+    return {
+        "total": n,
+        "mrr": round(sum(all_rr) / n, 3),
+        "p@1": mean("p@1"),
+        "p@5": mean("p@5"),
+        "r@5": mean("r@5"),
+        "r@10": mean("r@10"),
+        "ndcg@5": mean("ndcg@5"),
+        "avg_latency_ms": round(sum(r["latency_ms"] for r in results) / n, 0),
+    }
 
 
 def print_comparison(strategies: dict):
-    print(f"\n{'='*100}")
-    print("ABLATION STUDY — RETRIEVAL STRATEGY COMPARISON")
-    print(f"{'='*100}")
-    header = f"{'Strategy':<50} {'Queries':>7} {'MRR':>6} {'P@1':>6} {'P@5':>6} {'R@5':>6} {'NDCG@5':>7} {'Latency':>10}"
+    print(f"\n{'='*105}")
+    print("BENCHMARK — RETRIEVAL STRATEGY COMPARISON")
+    print(f"{'='*105}")
+    header = f"{'Strategy':<55} {'N':>4} {'MRR':>6} {'P@1':>6} {'P@5':>6} {'R@5':>6} {'NDCG@5':>7} {'Latency':>10}"
     print(header)
-    print(f"{'-'*50} {'-'*7} {'-'*6} {'-'*6} {'-'*6} {'-'*6} {'-'*7} {'-'*10}")
+    print(f"{'-'*55} {'-'*4} {'-'*6} {'-'*6} {'-'*6} {'-'*6} {'-'*7} {'-'*10}")
 
-    for name, agg in strategies.items():
-        # Main row (unique queries only for fair comparison)
-        uq = agg.get("unique_queries", agg)
-        lat = f"{uq['avg_latency_ms']:.0f} ms"
-        total = uq.get("total", agg.get("total", 0))
-        print(f"{name:<50} {total:>7} {uq['mrr']:>6.3f} {uq['p@1']:>6.3f} {uq['p@5']:>6.3f} {uq['r@5']:>6.3f} {uq['ndcg@5']:>7.3f} {lat:>10}")
+    for name, data in strategies.items():
+        a = data["agg"]
+        lat = f"{a['avg_latency_ms']:.0f} ms"
+        print(f"{name:<55} {a['total']:>4} {a['mrr']:>6.3f} {a['p@1']:>6.3f} {a['p@5']:>6.3f} {a['r@5']:>6.3f} {a['ndcg@5']:>7.3f} {lat:>10}")
 
-        # Duplicate row if present
-        dq = agg.get("duplicate_queries", {})
-        if dq:
-            lat_dup = f"{dq['avg_latency_ms']:.0f} ms"
-            dup_label = f"  └─ {name} (cached/duplicate)"
-            if len(dup_label) > 50:
-                dup_label = f"  └─ cached/duplicate queries"
-            print(f"{dup_label:<50} {dq['total']:>7} {dq['mrr']:>6.3f} {dq['p@1']:>6.3f} {dq['p@5']:>6.3f} {dq['r@5']:>6.3f} {dq['ndcg@5']:>7.3f} {lat_dup:>10}")
-
-    print(f"{'='*100}")
-
-    # Cache summary
-    for name, agg in strategies.items():
-        cost = agg.get("cost", {})
-        if cost.get("total_queries"):
-            print(f"\n  {name} — Cost & Cache:")
-            print(f"    Cache hit rate:      {cost.get('overall_cache_hit_rate', 0):.1%}")
-            print(f"    LLM rerank freq:     {cost.get('llm_rerank_frequency', 0):.1%}")
-            print(f"    Avg LLM calls/query: {cost.get('avg_llm_calls_per_query', 0):.1f}")
-
-    print()
+    print(f"{'='*105}\n")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="ARF Ablation Study")
+    parser = argparse.ArgumentParser(description="ARF Benchmark")
     parser.add_argument("--production", action="store_const", const="production", dest="env")
     parser.add_argument("--dev", action="store_const", const="dev", dest="env")
     parser.add_argument("--local", action="store_const", const="local", dest="env")
@@ -229,46 +178,83 @@ def main():
     from RAG_interface import RAG
 
     queries = load_queries(args.domain)
+    similar = pick_similar(queries)
     collection_key = DOMAIN_TO_COLLECTION.get(args.domain)
 
     if not collection_key or collection_key not in COLLECTION:
         print(f"Domain '{args.domain}' not configured")
         return
 
-    # Build duplicate set (50% random duplicates appended)
-    queries_with_dups, dup_ids = build_duplicate_set(queries)
-
-    print(f"ARF Ablation Study — {args.domain}")
+    print(f"ARF Benchmark — {args.domain}")
     print(f"  Unique queries: {len(queries)}")
-    print(f"  Duplicate queries: {len(queries_with_dups) - len(queries)} (50% random sample for cache latency test)")
-    print(f"  Total queries per strategy: {len(queries_with_dups)}\n")
-
-    rag = RAG(COLLECTION[collection_key], debug_mode=False)
+    print(f"  Similar queries: {len(similar)} (50% random pick, ~1 word changed)")
+    print()
 
     strategies = {}
 
-    print("  [1/3] MongoDB Atlas Semantic Only...")
-    strategies["MongoDB Atlas (Semantic Only)"] = _run_strategy(rag, queries_with_dups, "semantic")
+    # ===== 1) MongoDB Atlas Semantic Only — isolated RAG instance =====
+    print("  [1/4] MongoDB Atlas (Semantic Only) — isolated, no cache...")
+    rag_sem = RAG(COLLECTION[collection_key], debug_mode=False)
 
-    print(f"\n  [2/3] MongoDB Atlas Hybrid (Semantic + Keyword/Alias)...")
-    strategies["MongoDB Atlas (Hybrid)"] = _run_strategy(rag, queries_with_dups, "hybrid")
+    def semantic_only(query, _rag=rag_sem):
+        emb = _rag.query_manager.get_embedding(query)
+        raw = _rag.vector_search.search_main.search_similar(emb, k=10)
+        return [doc.get("title", "") for doc, score in (raw or [])]
 
-    print(f"\n  [3/3] Full ARF Pipeline (with caching)...")
-    strategies["Full ARF Pipeline"] = _run_strategy(rag, queries_with_dups, "full")
+    sem_results = _run_and_collect(queries, semantic_only)
+    strategies["MongoDB Atlas (Semantic Only)"] = {"agg": _agg(sem_results), "details": sem_results}
+    del rag_sem  # tear down
+
+    # ===== 2) MongoDB Atlas Hybrid — isolated RAG instance =====
+    print("\n  [2/4] MongoDB Atlas (Hybrid) — isolated, no cache...")
+    rag_hyb = RAG(COLLECTION[collection_key], debug_mode=False)
+
+    def hybrid(query, _rag=rag_hyb):
+        emb = _rag.query_manager.get_embedding(query)
+        raw = _rag.vector_search.search_main.search_similar(emb, k=10)
+        sem = raw or []
+        kw = _rag.keyword.find_textual(query) if _rag.keyword else []
+        scores = {}
+        for doc, score in sem:
+            t = doc.get("title", "")
+            scores[t] = max(scores.get(t, 0), score)
+        for t in kw:
+            if t not in scores:
+                scores[t] = 0.70
+            else:
+                scores[t] = min(1.0, scores[t] + 0.05)
+        return [t for t, _ in sorted(scores.items(), key=lambda x: x[1], reverse=True)]
+
+    hyb_results = _run_and_collect(queries, hybrid)
+    strategies["MongoDB Atlas (Hybrid)"] = {"agg": _agg(hyb_results), "details": hyb_results}
+    del rag_hyb  # tear down
+
+    # ===== 3) Full ARF Pipeline — unique queries =====
+    print("\n  [3/4] Full ARF Pipeline — unique queries...")
+    rag_full = RAG(COLLECTION[collection_key], debug_mode=False)
+
+    def full_pipeline(query):
+        results, _ = rag_full.process_query(query, language="en")
+        return [doc.get("title", "") for doc, score in results]
+
+    full_results = _run_and_collect(queries, full_pipeline)
+    strategies["Full ARF Pipeline"] = {"agg": _agg(full_results), "details": full_results}
+
+    # ===== 4) Full ARF Pipeline — similar queries (test cache) =====
+    # Uses SAME rag_full instance so cache from step 3 is available
+    print("\n  [4/4] Full ARF Pipeline — similar queries (should leverage cache)...")
+    sim_results = _run_and_collect(similar, full_pipeline)
+    strategies["Full ARF Pipeline (similar queries)"] = {"agg": _agg(sim_results), "details": sim_results}
 
     print_comparison(strategies)
 
-    # Save results
+    # Save
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     ts = time.strftime("%Y%m%d_%H%M%S")
-    path = RESULTS_DIR / f"ablation_{ts}.json"
-    # Strip details for cleaner JSON
-    save_data = {}
-    for name, agg in strategies.items():
-        save_data[name] = {k: v for k, v in agg.items() if k != "details"}
-        save_data[name]["details"] = agg.get("details", [])
+    path = RESULTS_DIR / f"benchmark_{ts}.json"
+    save = {name: {k: v for k, v in d.items() if k != "details"} for name, d in strategies.items()}
     with open(path, "w") as f:
-        json.dump(save_data, f, indent=2, default=str)
+        json.dump(save, f, indent=2, default=str)
     print(f"  Results saved to: {path}")
 
 

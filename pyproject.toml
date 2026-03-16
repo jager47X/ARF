@@ -44,4 +44,7 @@ ignore = [
     "F401",   # unused imports (some are re-exports)
     "F841",   # unused variables (some are intentional)
     "W605",   # invalid escape sequence (existing regex patterns)
+    "E402",   # module-level import not at top (preprocess scripts manipulate sys.path first)
+    "E701",   # multiple statements on one line with colon (existing compact style)
+    "E702",   # multiple statements on one line with semicolon (existing compact style)
 ]
