@@ -1,0 +1,43 @@
+# docker-compose.yml — ARF development environment
+#
+# Quick start:
+#   cp .env.example .env        # fill in your API keys
+#   docker compose up tests     # run the test suite
+#   docker compose run arf python -c "from config import COLLECTION; print(list(COLLECTION))"
+#
+# MongoDB Atlas remains external (MONGO_URI in .env).
+# For a fully local stack, swap the mongo service below to a real container.
+
+services:
+  arf:
+    build: .
+    env_file: .env
+    volumes:
+      - .:/app
+    working_dir: /app
+    command: ["python", "-c", "print('ARF ready. Use: docker compose run arf python ...')"]
+
+  tests:
+    build: .
+    env_file: .env
+    volumes:
+      - .:/app
+    working_dir: /app
+    command: ["python", "-m", "pytest", "tests/", "-v"]
+
+  validate-config:
+    build: .
+    env_file: .env
+    volumes:
+      - .:/app
+    working_dir: /app
+    command: ["python", "config_schema.py"]
+
+  benchmark:
+    build: .
+    env_file: .env
+    volumes:
+      - .:/app
+    working_dir: /app
+    command: ["python", "benchmarks/run_eval.py"]
+    profiles: ["benchmark"]
