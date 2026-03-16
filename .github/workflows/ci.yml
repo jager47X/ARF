@@ -37,8 +37,17 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install Ruff
+        run: pip install ruff
+
+      - name: Ruff lint
+        run: ruff check config.py config_schema.py rag_dependencies/ tests/
+
+      - name: Ruff format check
+        run: ruff format --check config_schema.py tests/
+
       - name: Check syntax (py_compile)
         run: |
-          # Compile files that don't depend on the parent services.rag package
           python -m py_compile config.py
+          python -m py_compile config_schema.py
           python -m py_compile rag_dependencies/keyword_matcher.py
