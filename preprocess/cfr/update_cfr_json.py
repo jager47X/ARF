@@ -6,13 +6,13 @@ Update CFR JSON file to match the new MongoDB structure:
 - Move text to title
 - Ensure part field is present
 """
-import os
-import sys
 import json
 import logging
+import os
+import re
+import sys
 from pathlib import Path
 from typing import Any, Dict, List
-import re
 
 # Setup path for module execution
 backend_dir = Path(__file__).resolve().parent.parent.parent.parent.parent
@@ -83,7 +83,7 @@ def extract_chapter_from_section(section: str, part_num: str) -> str:
     section_num = extract_section_number(section)
     if not section_num:
         return ""
-    
+
     # If section is "260.20" and part is "260", extract "2" (first digit after part)
     # Pattern: part_num.chapter.section -> extract chapter
     if section_num.startswith(part_num + "."):
@@ -92,7 +92,7 @@ def extract_chapter_from_section(section: str, part_num: str) -> str:
         match = re.search(r'^(\d+)', remaining)
         if match:
             return match.group(1)
-    
+
     return ""
 
 def extract_chapter_number(chapter: str) -> str:
@@ -120,7 +120,7 @@ def normalize_to_hierarchy(entry_obj: Dict[str, Any]) -> Dict[str, Any]:
     article_num = extract_article_number(article_text)
     part_num = extract_part_number(part_text)
     section_num = extract_section_number(section_text)
-    
+
     # Extract chapter: try from section number first, then from chapter text
     chapter_num = extract_chapter_from_section(section_text, part_num)
     if not chapter_num:
@@ -132,16 +132,16 @@ def normalize_to_hierarchy(entry_obj: Dict[str, Any]) -> Dict[str, Any]:
         for c in clauses:
             clause_title = c.get("title", "")
             clause_text = c.get("text", "")
-            
+
             # Clean title if present
             if clause_title:
                 clause_title = clean_title(clause_title)
-            
+
             # Section title: only use clause title (never use text as title)
             section_title = clause_title if clause_title else ""
             # Section text: only use clause text (never use title as text)
             section_text_content = clause_text if clause_text else ""
-            
+
             # Only add section if we have at least title or text
             if section_text_content or section_title:
                 sections.append({
@@ -196,11 +196,11 @@ def group_and_aggregate_sections(normalized_entries: List[Dict[str, Any]]) -> Li
     Returns one document per group with all sections sorted by number.
     """
     grouped = {}
-    
+
     for entry in normalized_entries:
         # Create grouping key
         key = (entry.get("article", ""), entry.get("part", ""), entry.get("chapter", ""))
-        
+
         if key not in grouped:
             # Initialize group with first entry's metadata
             # Use original title from first entry, or construct from metadata
@@ -215,7 +215,7 @@ def group_and_aggregate_sections(normalized_entries: List[Dict[str, Any]]) -> Li
                 if entry.get("chapter"):
                     title_parts.append(f"Chapter {entry['chapter']}")
                 title = " - ".join(title_parts) if title_parts else ""
-            
+
             grouped[key] = {
                 "article": entry.get("article", ""),
                 "part": entry.get("part", ""),
@@ -223,54 +223,54 @@ def group_and_aggregate_sections(normalized_entries: List[Dict[str, Any]]) -> Li
                 "title": title,
                 "sections": []
             }
-        
+
         # Add sections from this entry to the group
         entry_sections = entry.get("sections", [])
         grouped[key]["sections"].extend(entry_sections)
-    
+
     # Sort sections by number for each group
     result = []
     for key, doc in grouped.items():
         # Sort sections by number (handle both int and string numbers)
         doc["sections"].sort(key=lambda x: (
-            float(x.get("number", 0)) if isinstance(x.get("number"), (int, float)) 
+            float(x.get("number", 0)) if isinstance(x.get("number"), (int, float))
             else float(str(x.get("number", "0")).split(".")[0]) if str(x.get("number", "0")).replace(".", "").isdigit()
             else 0
         ))
         result.append(doc)
-    
+
     return result
 
 def update_json_file():
     """Update the CFR JSON file with the new structure."""
     logger.info(f"Reading CFR JSON from {CFR_DOCUMENT_PATH}...")
-    
+
     if not os.path.exists(CFR_DOCUMENT_PATH):
         logger.error(f"File not found: {CFR_DOCUMENT_PATH}")
         return
-    
+
     # Read current JSON
     with open(CFR_DOCUMENT_PATH, "r", encoding="utf-8") as f:
         data = json.load(f)
-    
+
     # Get the regulations/titles array
     cfr_data = data.get("data", {}).get("code_of_federal_regulations", {})
     items = cfr_data.get("titles") or cfr_data.get("regulations", [])
-    
+
     if not items:
         logger.warning("No 'titles' or 'regulations' found in JSON.")
         return
-    
+
     logger.info(f"Found {len(items)} entries to transform...")
-    
+
     # Normalize all entries
     normalized_entries = [normalize_to_hierarchy(item) for item in items]
     logger.info(f"Normalized {len(normalized_entries)} entries.")
-    
+
     # Group entries by (article, part, chapter) and aggregate sections
     transformed_items = group_and_aggregate_sections(normalized_entries)
     logger.info(f"Grouped into {len(transformed_items)} documents (aggregated sections).")
-    
+
     # Update the data structure
     if "titles" in cfr_data:
         cfr_data["titles"] = transformed_items
@@ -278,16 +278,16 @@ def update_json_file():
         cfr_data["regulations"] = transformed_items
     else:
         cfr_data["titles"] = transformed_items
-    
+
     # Write back to file
     logger.info(f"Writing updated JSON to {CFR_DOCUMENT_PATH}...")
     temp_path = CFR_DOCUMENT_PATH + ".tmp"
     with open(temp_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
-    
+
     # Replace original file
     os.replace(temp_path, CFR_DOCUMENT_PATH)
-    
+
     file_size = os.path.getsize(CFR_DOCUMENT_PATH) / (1024 * 1024)
     logger.info(f"JSON file updated successfully! File size: {file_size:.2f} MB")
     logger.info(f"Transformed {len(transformed_items)} entries")

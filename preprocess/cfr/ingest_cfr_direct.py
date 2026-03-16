@@ -3,13 +3,14 @@
 Direct ingestion script - inserts CFR JSON data exactly as-is into MongoDB.
 No transformations, no normalization, no grouping.
 """
-import os
-import sys
+import argparse
 import json
 import logging
-import argparse
+import os
+import sys
 from pathlib import Path
 from typing import Any, Dict, List
+
 from pymongo import MongoClient, WriteConcern
 from pymongo.errors import BulkWriteError
 
@@ -33,12 +34,12 @@ if 'backend' not in sys.modules:
     # Create backend module
     backend_mod = types.ModuleType('backend')
     sys.modules['backend'] = backend_mod
-    
+
     # Create services submodule
     services_mod = types.ModuleType('backend.services')
     backend_mod.services = services_mod
     sys.modules['backend.services'] = services_mod
-    
+
     # Create rag submodule
     rag_mod = types.ModuleType('backend.services.rag')
     services_mod.rag = rag_mod
@@ -110,16 +111,16 @@ def ingest():
             tls_config = {"tls": True}
         elif MONGO_URI and ("mongodb.net" in MONGO_URI or "mongodb.com" in MONGO_URI):
             tls_config = {"tls": True}
-        
+
         client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=30000, **tls_config)
-        
+
         try:
             client.admin.command('ping')
             logger.info("MongoDB connection test successful.")
         except Exception as e:
             logger.error(f"MongoDB connection test failed: {e}")
             raise
-        
+
         db = client[DB_NAME]
         coll = db.get_collection(COLL_NAME, write_concern=WriteConcern(w=0))
         logger.info("Connected to MongoDB (w=0).")
@@ -128,17 +129,17 @@ def ingest():
         data = load_json(CFR_DOCUMENT_PATH)
         if not data:
             return
-        
+
         # Get regulations array directly from JSON structure
         cfr_data = data.get("data", {}).get("code_of_federal_regulations", {})
         regulations = cfr_data.get("regulations", [])
-        
+
         if not regulations:
             logger.warning("No 'regulations' found in JSON.")
             return
-        
+
         logger.info("Found %d regulations in JSON. Inserting exactly as-is (one by one)...", len(regulations))
-        
+
         # Insert documents exactly as they are in JSON, one by one to handle large documents
         inserted_count = 0
         failed_count = 0
@@ -151,9 +152,9 @@ def ingest():
             except Exception as e:
                 failed_count += 1
                 logger.warning("Failed to insert document %d: %s", i + 1, str(e)[:100])
-        
+
         logger.info("Inserted %d documents. Failed: %d", inserted_count, failed_count)
-        
+
         # Create basic indexes
         try:
             coll.create_index("title", unique=False)

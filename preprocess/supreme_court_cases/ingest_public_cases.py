@@ -1,11 +1,12 @@
 # ingest_supreme_court_cases.py
-import os
-import sys
+import argparse
 import json
 import logging
-import argparse
+import os
+import sys
 from pathlib import Path
 from typing import Any, Dict, List
+
 from pymongo import MongoClient, WriteConcern
 from pymongo.errors import BulkWriteError, OperationFailure
 
@@ -28,7 +29,7 @@ if 'backend' not in sys.modules:
     # Create backend module
     backend_mod = types.ModuleType('backend')
     sys.modules['backend'] = backend_mod
-    
+
     # Load services
     services_init = backend_dir / 'services' / '__init__.py'
     services_mod = None
@@ -39,11 +40,11 @@ if 'backend' not in sys.modules:
             sys.modules['backend.services'] = services_mod
             spec.loader.exec_module(services_mod)
             setattr(backend_mod, 'services', services_mod)
-            
+
             # Also create 'services' module alias (for files using 'from services.rag.config')
             if 'services' not in sys.modules:
                 sys.modules['services'] = services_mod
-            
+
             # Load rag
             rag_init = backend_dir / 'services' / 'rag' / '__init__.py'
             rag_mod = None
@@ -54,10 +55,10 @@ if 'backend' not in sys.modules:
                     sys.modules['backend.services.rag'] = rag_mod
                     spec.loader.exec_module(rag_mod)
                     setattr(services_mod, 'rag', rag_mod)
-                    
+
                     # Also create 'services.rag' alias
                     sys.modules['services.rag'] = rag_mod
-                    
+
                     # Load config
                     config_file = backend_dir / 'services' / 'rag' / 'config.py'
                     if config_file.exists():
@@ -67,10 +68,10 @@ if 'backend' not in sys.modules:
                             sys.modules['backend.services.rag.config'] = config_mod
                             spec.loader.exec_module(config_mod)
                             setattr(rag_mod, 'config', config_mod)
-                            
+
                             # Also create 'services.rag.config' alias
                             sys.modules['services.rag.config'] = config_mod
-                            
+
                             # Load rag_dependencies
                             rag_deps_init = backend_dir / 'services' / 'rag' / 'rag_dependencies' / '__init__.py'
                             if rag_deps_init.exists():
@@ -80,7 +81,7 @@ if 'backend' not in sys.modules:
                                     sys.modules['backend.services.rag.rag_dependencies'] = rag_deps_mod
                                     spec.loader.exec_module(rag_deps_mod)
                                     setattr(rag_mod, 'rag_dependencies', rag_deps_mod)
-                                    
+
                                     # Also create 'services.rag.rag_dependencies' alias
                                     sys.modules['services.rag.rag_dependencies'] = rag_deps_mod
 
@@ -237,7 +238,7 @@ def compose_case_text(doc: Dict[str, Any]) -> str:
     case_title = doc.get("case", "").strip()
     summary = doc.get("summary", "").strip()
     category = doc.get("category", "").strip()
-    
+
     parts = []
     if case_title:
         parts.append(f"Case: {case_title}")
@@ -245,7 +246,7 @@ def compose_case_text(doc: Dict[str, Any]) -> str:
         parts.append(f"Category: {category}")
     if summary:
         parts.append(f"Summary: {summary}")
-    
+
     return "\n\n".join(parts) if parts else ""
 
 def generate_embeddings_for_cases(embedder: LLM, cases: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -253,7 +254,7 @@ def generate_embeddings_for_cases(embedder: LLM, cases: List[Dict[str, Any]]) ->
     # Collect all case texts
     case_texts = []
     valid_indices = []
-    
+
     for idx, case_doc in enumerate(cases):
         text = compose_case_text(case_doc)
         if text.strip():
@@ -261,28 +262,28 @@ def generate_embeddings_for_cases(embedder: LLM, cases: List[Dict[str, Any]]) ->
             valid_indices.append(idx)
         else:
             logger.warning(f"No text found for case: {case_doc.get('case', 'Unknown')}")
-    
+
     if not case_texts:
         logger.warning("No valid case texts to embed")
         return cases
-    
+
     logger.info(f"Generating embeddings for {len(case_texts)} cases using batch API (Voyage-3-large, 1024 dimensions)...")
-    
+
     # Generate embeddings in batches
     try:
         embeddings = embedder.get_openai_embeddings_batch(case_texts, batch_size=100)
-        
+
         # Assign embeddings back to cases
         for i, idx in enumerate(valid_indices):
             if i < len(embeddings) and embeddings[i] is not None:
                 cases[idx]["embedding"] = embeddings[i].tolist() if hasattr(embeddings[i], 'tolist') else list(embeddings[i])
             else:
                 logger.warning(f"Failed to generate embedding for case: {cases[idx].get('case', 'Unknown')}")
-        
+
         logger.info(f"Generated embeddings for {len(valid_indices)}/{len(cases)} cases")
     except Exception as e:
         logger.error(f"Error generating batch embeddings: {e}")
-    
+
     logger.info("Completed embedding generation for all cases.")
     return cases
 
@@ -336,7 +337,7 @@ def ingest():
         if not cases:
             logger.info("No cases found.")
             return
-        
+
         logger.info("Loaded %d cases from JSON.", len(cases))
 
         # Generate embeddings if requested

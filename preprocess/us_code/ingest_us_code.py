@@ -1,14 +1,15 @@
 # ingest_us_code.py
-import os
-import sys
+import argparse
+import datetime
 import json
 import logging
-import argparse
+import os
 import re
+import sys
 import time
-import datetime
-from typing import Any, Dict, List
 from pathlib import Path
+from typing import Any, Dict, List
+
 from pymongo import MongoClient, WriteConcern
 from pymongo.errors import BulkWriteError
 
@@ -32,7 +33,7 @@ if 'backend' not in sys.modules:
     # Create backend module
     backend_mod = types.ModuleType('backend')
     sys.modules['backend'] = backend_mod
-    
+
     # Load services
     services_init = backend_dir / 'services' / '__init__.py'
     services_mod = None
@@ -43,11 +44,11 @@ if 'backend' not in sys.modules:
             sys.modules['backend.services'] = services_mod
             spec.loader.exec_module(services_mod)
             setattr(backend_mod, 'services', services_mod)
-            
+
             # Also create 'services' module alias (for files using 'from services.rag.config')
             if 'services' not in sys.modules:
                 sys.modules['services'] = services_mod
-            
+
             # Load rag
             rag_init = backend_dir / 'services' / 'rag' / '__init__.py'
             rag_mod = None
@@ -58,10 +59,10 @@ if 'backend' not in sys.modules:
                     sys.modules['backend.services.rag'] = rag_mod
                     spec.loader.exec_module(rag_mod)
                     setattr(services_mod, 'rag', rag_mod)
-                    
+
                     # Also create 'services.rag' alias
                     sys.modules['services.rag'] = rag_mod
-                    
+
                     # Load config
                     config_file = backend_dir / 'services' / 'rag' / 'config.py'
                     if config_file.exists():
@@ -71,10 +72,10 @@ if 'backend' not in sys.modules:
                             sys.modules['backend.services.rag.config'] = config_mod
                             spec.loader.exec_module(config_mod)
                             setattr(rag_mod, 'config', config_mod)
-                            
+
                             # Also create 'services.rag.config' alias
                             sys.modules['services.rag.config'] = config_mod
-                            
+
                             # Load rag_dependencies
                             rag_deps_init = backend_dir / 'services' / 'rag' / 'rag_dependencies' / '__init__.py'
                             if rag_deps_init.exists():
@@ -84,7 +85,7 @@ if 'backend' not in sys.modules:
                                     sys.modules['backend.services.rag.rag_dependencies'] = rag_deps_mod
                                     spec.loader.exec_module(rag_deps_mod)
                                     setattr(rag_mod, 'rag_dependencies', rag_deps_mod)
-                                    
+
                                     # Also create 'services.rag.rag_dependencies' alias
                                     sys.modules['services.rag.rag_dependencies'] = rag_deps_mod
 
@@ -183,7 +184,7 @@ def normalize_number(num_str: str) -> str:
     Converts letters to numbers: a->1, b->2, etc."""
     if not num_str:
         return ""
-    
+
     num_str = str(num_str).strip()
     # Remove leading/trailing quotes
     num_str = num_str.strip('"\'')
@@ -192,21 +193,21 @@ def normalize_number(num_str: str) -> str:
     # Remove any remaining quotes
     num_str = num_str.strip('"\'')
     num_str = num_str.strip()
-    
+
     # Convert single letter to number (a=1, b=2, etc.)
     if len(num_str) == 1 and num_str.isalpha():
         letter_num = ord(num_str.lower()) - ord('a') + 1
         return str(letter_num)
-    
+
     return num_str
 
 def normalize_chapter(chapter_str: str) -> str:
     """Normalize chapter: 'Chapter CHAPTER 1—' -> 'Chapter 1'"""
     if not chapter_str:
         return ""
-    
+
     chapter_str = str(chapter_str).strip()
-    
+
     # Remove all "Chapter", "CHAPTER" prefixes (case insensitive, may appear multiple times)
     chapter_clean = chapter_str
     while True:
@@ -214,10 +215,10 @@ def normalize_chapter(chapter_str: str) -> str:
         if new_clean == chapter_clean:
             break
         chapter_clean = new_clean
-    
+
     # Remove everything after and including em-dash, en-dash, or regular dash
     chapter_clean = re.sub(r'[—–\-]+.*$', '', chapter_clean).strip()
-    
+
     # Extract just digits and optional letters (for cases like "1A")
     match = re.search(r'([0-9]+[A-Za-z]?)', chapter_clean)
     if match:
@@ -235,9 +236,9 @@ def normalize_section(section_str: str) -> str:
     """Normalize section: 'Section § 1.' -> 'Section 1'"""
     if not section_str:
         return ""
-    
+
     section_str = str(section_str).strip()
-    
+
     # Remove "Section" prefix (case insensitive, may appear multiple times)
     section_clean = section_str
     while True:
@@ -245,13 +246,13 @@ def normalize_section(section_str: str) -> str:
         if new_clean == section_clean:
             break
         section_clean = new_clean
-    
+
     # Remove § symbols
     section_clean = re.sub(r'§+\s*', '', section_clean)
     # Remove trailing periods
     section_clean = section_clean.rstrip('.')
     section_clean = section_clean.strip()
-    
+
     # Extract just the number
     match = re.search(r'([0-9]+[A-Za-z]?)', section_clean)
     if match:
@@ -267,7 +268,7 @@ def normalize_title(title_str: str) -> str:
     """Normalize title by removing '--' and '.' characters."""
     if not title_str:
         return ""
-    
+
     title_str = str(title_str).strip()
     # Remove '--' (double dashes)
     title_str = title_str.replace('--', '')
@@ -287,28 +288,28 @@ def normalize_to_hierarchy(entry_obj: Dict[str, Any]) -> Dict[str, Any]:
     chapter = entry_obj.get("chapter", "")
     section = entry_obj.get("section", "")
     title = normalize_title(entry_obj.get("title", ""))
-    
+
     # Normalize chapter
     chapter = normalize_chapter(chapter)
-    
+
     # NEW FORMAT: section is an array of section entries
     if isinstance(section, list):
         # Convert section array to clauses array
         clauses = []
         section_num = ""  # Will be set from first section entry
-        
+
         for idx, sec_entry in enumerate(section):
             if isinstance(sec_entry, dict):
                 # Get section number from first entry (all entries in same section have same number)
                 if not section_num:
                     section_num = str(sec_entry.get("number", ""))
-                
+
                 # Renumber clauses sequentially starting from 1
                 clause_num = str(idx + 1)
-                
+
                 # Get and normalize clause title
                 clause_title = normalize_title(sec_entry.get("title", "") or "")
-                
+
                 # Each section entry becomes a clause
                 clause = {
                     "number": clause_num,
@@ -316,18 +317,18 @@ def normalize_to_hierarchy(entry_obj: Dict[str, Any]) -> Dict[str, Any]:
                     "text": sec_entry.get("text", "") or "",
                 }
                 clauses.append(clause)
-        
+
         # Normalize section number format
         section_formatted = normalize_section(section_num)
-        
+
         # If there's only one clause and it has no title, use section title
         if len(clauses) == 1 and not clauses[0].get("title"):
             clauses[0]["title"] = title
-        
+
         # Use first clause's title as document title if no title provided
         if not title and clauses:
             title = clauses[0].get("title", "") or ""
-        
+
         return {
             "article": article,
             "chapter": chapter,
@@ -335,7 +336,7 @@ def normalize_to_hierarchy(entry_obj: Dict[str, Any]) -> Dict[str, Any]:
             "title": title,
             "clauses": clauses
         }
-    
+
     # OLD FORMAT: Check for existing clauses
     clauses = entry_obj.get("clauses")
     if clauses and isinstance(clauses, list):
@@ -350,14 +351,14 @@ def normalize_to_hierarchy(entry_obj: Dict[str, Any]) -> Dict[str, Any]:
                 "title": clause_title,
                 "text": c.get("text") or "",
             })
-        
+
         # Normalize section format
         section_formatted = normalize_section(section)
-        
+
         # If there's only one clause and it has no title, use section title
         if len(clean_clauses) == 1 and not clean_clauses[0].get("title"):
             clean_clauses[0]["title"] = title
-        
+
         return {"article": article, "chapter": chapter, "section": section_formatted, "title": title, "clauses": clean_clauses}
 
     # OLD FORMAT: Flat -> wrap
@@ -369,7 +370,7 @@ def normalize_to_hierarchy(entry_obj: Dict[str, Any]) -> Dict[str, Any]:
 
     # Normalize section format
     section_formatted = normalize_section(section)
-    
+
     # Use clause number 1, clause title identical to section title for consistency
     return {
         "article": article,
@@ -390,7 +391,7 @@ def generate_embeddings_for_docs_batch(embedder, docs: List[Dict[str, Any]]) -> 
     clause_texts = []
     doc_indices = []  # Track which doc each text belongs to
     clause_indices = []  # Track which clause each text belongs to (doc_idx, clause_idx)
-    
+
     for doc_idx, doc in enumerate(docs):
         # Document-level text
         doc_text_parts = []
@@ -402,12 +403,12 @@ def generate_embeddings_for_docs_batch(embedder, docs: List[Dict[str, Any]]) -> 
             doc_text_parts.append(f"Chapter {doc['chapter']}")
         if doc.get("section"):
             doc_text_parts.append(f"Section {doc['section']}")
-        
+
         doc_text = " ".join(doc_text_parts)
         if doc_text:
             doc_texts.append(doc_text)
             doc_indices.append(doc_idx)
-        
+
         # Clause-level texts
         clauses = doc.get("clauses", [])
         for clause_idx, clause in enumerate(clauses):
@@ -416,12 +417,12 @@ def generate_embeddings_for_docs_batch(embedder, docs: List[Dict[str, Any]]) -> 
                 clause_text_parts.append(clause["title"])
             if clause.get("text"):
                 clause_text_parts.append(clause["text"])
-            
+
             clause_text = " ".join(clause_text_parts)
             if clause_text:
                 clause_texts.append(clause_text)
                 clause_indices.append((doc_idx, clause_idx))
-    
+
     # Generate document embeddings in batch
     if doc_texts:
         try:
@@ -431,7 +432,7 @@ def generate_embeddings_for_docs_batch(embedder, docs: List[Dict[str, Any]]) -> 
                     docs[doc_idx]["embedding"] = doc_embeddings[i].tolist() if hasattr(doc_embeddings[i], 'tolist') else list(doc_embeddings[i])
         except Exception as e:
             logger.warning(f"Failed to generate document embeddings in batch: {e}")
-    
+
     # Generate clause embeddings in batch
     if clause_texts:
         try:
@@ -445,7 +446,7 @@ def generate_embeddings_for_docs_batch(embedder, docs: List[Dict[str, Any]]) -> 
                     docs[doc_idx]["clauses"][clause_idx]["embedding"] = clause_embeddings[i].tolist() if hasattr(clause_embeddings[i], 'tolist') else list(clause_embeddings[i])
         except Exception as e:
             logger.warning(f"Failed to generate clause embeddings in batch: {e}")
-    
+
     return docs
 
 def ingest():
@@ -459,9 +460,9 @@ def ingest():
         elif MONGO_URI and ("mongodb.net" in MONGO_URI or "mongodb.com" in MONGO_URI):
             # MongoDB Atlas standard connections also require TLS
             tls_config = {"tls": True}
-        
+
         client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=30000, **tls_config)
-        
+
         # Test connection with a ping
         try:
             client.admin.command('ping')
@@ -469,7 +470,7 @@ def ingest():
         except Exception as e:
             logger.error(f"MongoDB connection test failed: {e}")
             raise
-        
+
         db = client[DB_NAME]
         coll = db.get_collection(COLL_NAME, write_concern=WriteConcern(w=0))
         logger.info("Connected to MongoDB (w=0).")
@@ -509,7 +510,7 @@ def ingest():
             mode_str = "batch" if use_batch else "individual"
             logger.info(f"Generating embeddings using Voyage-3-large (1024 dimensions) in {mode_str} mode...")
             embedder = LLM(config=US_CODE_CONF)
-            
+
             if use_batch:
                 # Process in batches to avoid memory issues
                 batch_size = 50  # Process 50 documents at a time
@@ -540,7 +541,7 @@ def ingest():
                         doc_text_parts.append(f"Chapter {doc['chapter']}")
                     if doc.get("section"):
                         doc_text_parts.append(f"Section {doc['section']}")
-                    
+
                     doc_text = " ".join(doc_text_parts)
                     if doc_text:
                         try:
@@ -549,7 +550,7 @@ def ingest():
                                 doc["embedding"] = doc_emb.tolist() if hasattr(doc_emb, 'tolist') else list(doc_emb)
                         except Exception as e:
                             logger.warning(f"Failed to generate document embedding: {e}")
-                    
+
                     # Clause-level embeddings
                     clauses = doc.get("clauses", [])
                     for clause in clauses:
@@ -558,7 +559,7 @@ def ingest():
                             clause_text_parts.append(clause["title"])
                         if clause.get("text"):
                             clause_text_parts.append(clause["text"])
-                        
+
                         clause_text = " ".join(clause_text_parts)
                         if clause_text:
                             try:
@@ -567,9 +568,9 @@ def ingest():
                                     clause["embedding"] = clause_emb.tolist() if hasattr(clause_emb, 'tolist') else list(clause_emb)
                             except Exception as e:
                                 logger.warning(f"Failed to generate clause embedding: {e}")
-                    
+
                     return doc
-                
+
                 # Process documents sequentially to avoid rate limit issues
                 # With rate limiting, sequential processing ensures we stay under the limit
                 for i, doc in enumerate(docs):
@@ -579,7 +580,7 @@ def ingest():
                         docs[i] = generate_embeddings_for_doc(embedder, doc)
                     except Exception as e:
                         logger.error(f"Error generating embeddings for doc {i}: {e}")
-            
+
             logger.info("Embeddings generation complete.")
 
         # Deduplicate by top-level title (section title)
@@ -608,21 +609,21 @@ def ingest():
             try:
                 update_fields = {}
                 needs_update = False
-                
+
                 # Normalize chapter if present
                 if "chapter" in existing_doc and existing_doc["chapter"]:
                     normalized_chapter = normalize_chapter(existing_doc["chapter"])
                     if normalized_chapter != existing_doc["chapter"]:
                         update_fields["chapter"] = normalized_chapter
                         needs_update = True
-                
+
                 # Normalize section if present
                 if "section" in existing_doc and existing_doc["section"]:
                     normalized_section = normalize_section(existing_doc["section"])
                     if normalized_section != existing_doc["section"]:
                         update_fields["section"] = normalized_section
                         needs_update = True
-                
+
                 if needs_update:
                     result = coll.update_one(
                         {"_id": existing_doc["_id"]},
@@ -632,7 +633,7 @@ def ingest():
                         normalized_count += 1
             except Exception as e:
                 logger.warning(f"Failed to normalize document '{existing_doc.get('title', 'unknown')}': {e}")
-        
+
         if normalized_count > 0:
             logger.info("Normalized chapter/section fields for %d existing documents.", normalized_count)
         else:

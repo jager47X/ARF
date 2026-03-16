@@ -1,11 +1,12 @@
 # ingest_ca_codes.py
-import os
-import sys
+import argparse
 import json
 import logging
-import argparse
-from typing import Any, Dict, List
+import os
+import sys
 from pathlib import Path
+from typing import Any, Dict, List
+
 from pymongo import MongoClient, WriteConcern
 from pymongo.errors import BulkWriteError
 
@@ -29,7 +30,7 @@ if 'backend' not in sys.modules:
     # Create backend module
     backend_mod = types.ModuleType('backend')
     sys.modules['backend'] = backend_mod
-    
+
     # Load services
     services_init = backend_dir / 'services' / '__init__.py'
     services_mod = None
@@ -40,11 +41,11 @@ if 'backend' not in sys.modules:
             sys.modules['backend.services'] = services_mod
             spec.loader.exec_module(services_mod)
             setattr(backend_mod, 'services', services_mod)
-            
+
             # Also create 'services' module alias (for files using 'from services.rag.config')
             if 'services' not in sys.modules:
                 sys.modules['services'] = services_mod
-            
+
             # Load rag
             rag_init = backend_dir / 'services' / 'rag' / '__init__.py'
             rag_mod = None
@@ -55,10 +56,10 @@ if 'backend' not in sys.modules:
                     sys.modules['backend.services.rag'] = rag_mod
                     spec.loader.exec_module(rag_mod)
                     setattr(services_mod, 'rag', rag_mod)
-                    
+
                     # Also create 'services.rag' alias
                     sys.modules['services.rag'] = rag_mod
-                    
+
                     # Load config
                     config_file = backend_dir / 'services' / 'rag' / 'config.py'
                     if config_file.exists():
@@ -68,10 +69,10 @@ if 'backend' not in sys.modules:
                             sys.modules['backend.services.rag.config'] = config_mod
                             spec.loader.exec_module(config_mod)
                             setattr(rag_mod, 'config', config_mod)
-                            
+
                             # Also create 'services.rag.config' alias
                             sys.modules['services.rag.config'] = config_mod
-                            
+
                             # Load rag_dependencies
                             rag_deps_init = backend_dir / 'services' / 'rag' / 'rag_dependencies' / '__init__.py'
                             if rag_deps_init.exists():
@@ -81,7 +82,7 @@ if 'backend' not in sys.modules:
                                     sys.modules['backend.services.rag.rag_dependencies'] = rag_deps_mod
                                     spec.loader.exec_module(rag_deps_mod)
                                     setattr(rag_mod, 'rag_dependencies', rag_deps_mod)
-                                    
+
                                     # Also create 'services.rag.rag_dependencies' alias
                                     sys.modules['services.rag.rag_dependencies'] = rag_deps_mod
 

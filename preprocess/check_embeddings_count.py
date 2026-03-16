@@ -3,11 +3,12 @@
 Check how many embeddings are done for CFR and US Code in production MongoDB.
 Counts both document-level and sub-level (sections/clauses) embeddings.
 """
+import argparse
+import logging
 import os
 import sys
-import logging
-import argparse
 from pathlib import Path
+
 from pymongo import MongoClient
 
 # Setup path for module execution
@@ -28,7 +29,7 @@ import types
 if 'backend' not in sys.modules:
     backend_mod = types.ModuleType('backend')
     sys.modules['backend'] = backend_mod
-    
+
     # Load services
     services_init = backend_dir / 'services' / '__init__.py'
     if services_init.exists():
@@ -38,10 +39,10 @@ if 'backend' not in sys.modules:
             sys.modules['backend.services'] = services_mod
             spec.loader.exec_module(services_mod)
             setattr(backend_mod, 'services', services_mod)
-            
+
             if 'services' not in sys.modules:
                 sys.modules['services'] = services_mod
-            
+
             # Load rag
             rag_init = backend_dir / 'services' / 'rag' / '__init__.py'
             if rag_init.exists():
@@ -52,7 +53,7 @@ if 'backend' not in sys.modules:
                     spec.loader.exec_module(rag_mod)
                     setattr(services_mod, 'rag', rag_mod)
                     sys.modules['services.rag'] = rag_mod
-                    
+
                     # Load config
                     config_file = backend_dir / 'services' / 'rag' / 'config.py'
                     if config_file.exists():
@@ -144,22 +145,22 @@ def check_cfr_embeddings(client, db_name, coll_name):
     logger.info(f"\n{'='*60}")
     logger.info("Checking CFR (Code of Federal Regulations) Embeddings")
     logger.info(f"{'='*60}")
-    
+
     db = client[db_name]
     coll = db.get_collection(coll_name)
-    
+
     # Get total count
     total_docs = coll.count_documents({})
     logger.info(f"Total documents: {total_docs}")
-    
+
     # Count documents with document-level embeddings
     docs_with_doc_embedding = coll.count_documents({
-        "embedding": {"$exists": True, "$ne": None, "$ne": []}
+        "embedding": {"$exists": True, "$nin": [None, []]}
     })
-    
+
     # Use aggregation to count section-level embeddings
     logger.info("Analyzing section-level embeddings...")
-    
+
     pipeline = [
         {
             "$project": {
@@ -207,7 +208,7 @@ def check_cfr_embeddings(client, db_name, coll_name):
             }
         }
     ]
-    
+
     result = list(coll.aggregate(pipeline))
     if result:
         stats = result[0]
@@ -216,23 +217,23 @@ def check_cfr_embeddings(client, db_name, coll_name):
     else:
         total_sections = 0
         sections_with_embedding = 0
-    
+
     # Calculate total embeddings
     total_embeddings = docs_with_doc_embedding + sections_with_embedding
-    
-    logger.info(f"\nDocument-level embeddings:")
+
+    logger.info("\nDocument-level embeddings:")
     logger.info(f"  Documents with embedding: {docs_with_doc_embedding} ({docs_with_doc_embedding/total_docs*100:.1f}%)" if total_docs > 0 else "  Documents with embedding: 0")
     logger.info(f"  Documents without embedding: {total_docs - docs_with_doc_embedding} ({(total_docs - docs_with_doc_embedding)/total_docs*100:.1f}%)" if total_docs > 0 else "  Documents without embedding: 0")
-    
-    logger.info(f"\nSection-level embeddings:")
+
+    logger.info("\nSection-level embeddings:")
     logger.info(f"  Total sections: {total_sections}")
     logger.info(f"  Sections with embedding: {sections_with_embedding} ({sections_with_embedding/total_sections*100:.1f}%)" if total_sections > 0 else "  Sections with embedding: 0")
     logger.info(f"  Sections without embedding: {total_sections - sections_with_embedding} ({(total_sections - sections_with_embedding)/total_sections*100:.1f}%)" if total_sections > 0 else "  Sections without embedding: 0")
-    
+
     logger.info(f"\nTOTAL EMBEDDINGS: {total_embeddings}")
     logger.info(f"  - Document embeddings: {docs_with_doc_embedding}")
     logger.info(f"  - Section embeddings: {sections_with_embedding}")
-    
+
     return {
         "total_docs": total_docs,
         "docs_with_doc_embedding": docs_with_doc_embedding,
@@ -246,22 +247,22 @@ def check_us_code_embeddings(client, db_name, coll_name):
     logger.info(f"\n{'='*60}")
     logger.info("Checking US Code (United States Code) Embeddings")
     logger.info(f"{'='*60}")
-    
+
     db = client[db_name]
     coll = db.get_collection(coll_name)
-    
+
     # Get total count
     total_docs = coll.count_documents({})
     logger.info(f"Total documents: {total_docs}")
-    
+
     # Count documents with document-level embeddings
     docs_with_doc_embedding = coll.count_documents({
-        "embedding": {"$exists": True, "$ne": None, "$ne": []}
+        "embedding": {"$exists": True, "$nin": [None, []]}
     })
-    
+
     # Use aggregation to count clause-level embeddings
     logger.info("Analyzing clause-level embeddings...")
-    
+
     pipeline = [
         {
             "$project": {
@@ -309,7 +310,7 @@ def check_us_code_embeddings(client, db_name, coll_name):
             }
         }
     ]
-    
+
     result = list(coll.aggregate(pipeline))
     if result:
         stats = result[0]
@@ -318,23 +319,23 @@ def check_us_code_embeddings(client, db_name, coll_name):
     else:
         total_clauses = 0
         clauses_with_embedding = 0
-    
+
     # Calculate total embeddings
     total_embeddings = docs_with_doc_embedding + clauses_with_embedding
-    
-    logger.info(f"\nDocument-level embeddings:")
+
+    logger.info("\nDocument-level embeddings:")
     logger.info(f"  Documents with embedding: {docs_with_doc_embedding} ({docs_with_doc_embedding/total_docs*100:.1f}%)" if total_docs > 0 else "  Documents with embedding: 0")
     logger.info(f"  Documents without embedding: {total_docs - docs_with_doc_embedding} ({(total_docs - docs_with_doc_embedding)/total_docs*100:.1f}%)" if total_docs > 0 else "  Documents without embedding: 0")
-    
-    logger.info(f"\nClause-level embeddings:")
+
+    logger.info("\nClause-level embeddings:")
     logger.info(f"  Total clauses: {total_clauses}")
     logger.info(f"  Clauses with embedding: {clauses_with_embedding} ({clauses_with_embedding/total_clauses*100:.1f}%)" if total_clauses > 0 else "  Clauses with embedding: 0")
     logger.info(f"  Clauses without embedding: {total_clauses - clauses_with_embedding} ({(total_clauses - clauses_with_embedding)/total_clauses*100:.1f}%)" if total_clauses > 0 else "  Clauses without embedding: 0")
-    
+
     logger.info(f"\nTOTAL EMBEDDINGS: {total_embeddings}")
     logger.info(f"  - Document embeddings: {docs_with_doc_embedding}")
     logger.info(f"  - Clause embeddings: {clauses_with_embedding}")
-    
+
     return {
         "total_docs": total_docs,
         "docs_with_doc_embedding": docs_with_doc_embedding,
@@ -353,9 +354,9 @@ def main():
             tls_config = {"tls": True}
         elif MONGO_URI and ("mongodb.net" in MONGO_URI or "mongodb.com" in MONGO_URI):
             tls_config = {"tls": True}
-        
+
         client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=30000, **tls_config)
-        
+
         # Test connection
         try:
             client.admin.command('ping')
@@ -363,21 +364,21 @@ def main():
         except Exception as e:
             logger.error(f"MongoDB connection test failed: {e}")
             raise
-        
+
         # Check CFR embeddings
         cfr_stats = check_cfr_embeddings(
             client,
             CFR_CONF["db_name"],
             CFR_CONF["main_collection_name"]
         )
-        
+
         # Check US Code embeddings
         us_code_stats = check_us_code_embeddings(
             client,
             US_CODE_CONF["db_name"],
             US_CODE_CONF["main_collection_name"]
         )
-        
+
         # Print combined summary
         logger.info(f"\n{'='*60}")
         logger.info("COMBINED SUMMARY")
@@ -385,14 +386,14 @@ def main():
         logger.info(f"CFR Total Embeddings: {cfr_stats['total_embeddings']}")
         logger.info(f"  - Document embeddings: {cfr_stats['docs_with_doc_embedding']}")
         logger.info(f"  - Section embeddings: {cfr_stats['sections_with_embedding']}")
-        logger.info(f"")
+        logger.info("")
         logger.info(f"US Code Total Embeddings: {us_code_stats['total_embeddings']}")
         logger.info(f"  - Document embeddings: {us_code_stats['docs_with_doc_embedding']}")
         logger.info(f"  - Clause embeddings: {us_code_stats['clauses_with_embedding']}")
-        logger.info(f"")
+        logger.info("")
         logger.info(f"GRAND TOTAL: {cfr_stats['total_embeddings'] + us_code_stats['total_embeddings']} embeddings")
         logger.info(f"{'='*60}")
-        
+
     except Exception as e:
         logger.error(f"Fatal error: {e}", exc_info=True)
         raise

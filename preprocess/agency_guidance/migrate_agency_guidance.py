@@ -5,12 +5,13 @@ Migration script to update existing agency guidance documents in MongoDB:
 - Remove clauses structure
 - Combine all clause text into a single text field
 """
+import argparse
+import logging
 import os
 import sys
-import logging
-import argparse
-from typing import Any, Dict
 from pathlib import Path
+from typing import Any, Dict
+
 from pymongo import MongoClient
 from pymongo.errors import BulkWriteError
 
@@ -30,7 +31,7 @@ import types
 if 'backend' not in sys.modules:
     backend_mod = types.ModuleType('backend')
     sys.modules['backend'] = backend_mod
-    
+
     services_init = backend_dir / 'services' / '__init__.py'
     if services_init.exists():
         spec = importlib.util.spec_from_file_location('backend.services', services_init)
@@ -39,10 +40,10 @@ if 'backend' not in sys.modules:
             sys.modules['backend.services'] = services_mod
             spec.loader.exec_module(services_mod)
             setattr(backend_mod, 'services', services_mod)
-            
+
             if 'services' not in sys.modules:
                 sys.modules['services'] = services_mod
-            
+
             rag_init = backend_dir / 'services' / 'rag' / '__init__.py'
             if rag_init.exists():
                 spec = importlib.util.spec_from_file_location('backend.services.rag', rag_init)
@@ -52,7 +53,7 @@ if 'backend' not in sys.modules:
                     spec.loader.exec_module(rag_mod)
                     setattr(services_mod, 'rag', rag_mod)
                     sys.modules['services.rag'] = rag_mod
-                    
+
                     config_file = backend_dir / 'services' / 'rag' / 'config.py'
                     if config_file.exists():
                         spec = importlib.util.spec_from_file_location('backend.services.rag.config', config_file)
@@ -125,7 +126,7 @@ COLL_NAME: str = AGENCY_GUIDANCE_CONF["main_collection_name"]
 def combine_clause_text(doc: Dict[str, Any]) -> str:
     """Extract and combine all text from clauses into a single string."""
     text_parts = []
-    
+
     # Get text from clauses if they exist
     clauses = doc.get("clauses", [])
     if clauses and isinstance(clauses, list):
@@ -133,12 +134,12 @@ def combine_clause_text(doc: Dict[str, Any]) -> str:
             clause_text = clause.get("text", "")
             if clause_text:
                 text_parts.append(clause_text)
-    
+
     # Also check for existing text field
     existing_text = doc.get("text", "")
     if existing_text:
         text_parts.append(existing_text)
-    
+
     # Join all text parts
     return " ".join(text_parts).strip()
 
@@ -146,7 +147,7 @@ def migrate_document(doc: Dict[str, Any]) -> Dict[str, Any]:
     """Transform a document to the new structure."""
     # Combine all clause text
     combined_text = combine_clause_text(doc)
-    
+
     # Build new document with only required fields
     new_doc = {
         "title": doc.get("title", ""),
@@ -154,15 +155,15 @@ def migrate_document(doc: Dict[str, Any]) -> Dict[str, Any]:
         "agency": doc.get("agency", ""),
         "text": combined_text
     }
-    
+
     # Preserve embedding if it exists (document-level)
     if "embedding" in doc:
         new_doc["embedding"] = doc["embedding"]
-    
+
     # Preserve _id
     if "_id" in doc:
         new_doc["_id"] = doc["_id"]
-    
+
     return new_doc
 
 def migrate():
@@ -175,9 +176,9 @@ def migrate():
             tls_config = {"tls": True}
         elif MONGO_URI and ("mongodb.net" in MONGO_URI or "mongodb.com" in MONGO_URI):
             tls_config = {"tls": True}
-        
+
         client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=30000, **tls_config)
-        
+
         # Test connection
         try:
             client.admin.command('ping')
@@ -185,33 +186,33 @@ def migrate():
         except Exception as e:
             logger.error(f"MongoDB connection test failed: {e}")
             raise
-        
+
         db = client[DB_NAME]
         coll = db.get_collection(COLL_NAME)
         logger.info(f"Connected to MongoDB collection: {DB_NAME}.{COLL_NAME}")
-        
+
         # Count total documents
         total_count = coll.count_documents({})
         logger.info(f"Found {total_count} documents to migrate")
-        
+
         if total_count == 0:
             logger.warning("No documents found in collection. Nothing to migrate.")
             return
-        
+
         # Process documents in batches
         batch_size = 100
         updated_count = 0
         skipped_count = 0
-        
+
         cursor = coll.find({})
-        
+
         # First, check a sample document to see its structure
         sample_doc = coll.find_one({})
         if sample_doc:
             logger.info(f"Sample document fields: {list(sample_doc.keys())}")
             if "clauses" in sample_doc:
                 logger.info(f"Sample document has {len(sample_doc.get('clauses', []))} clauses")
-        
+
         for doc in cursor:
             try:
                 # Check if document needs migration (has clauses, article, section, or document_type)
@@ -221,16 +222,16 @@ def migrate():
                     "section" in doc or
                     "document_type" in doc
                 )
-                
+
                 if not needs_migration:
                     skipped_count += 1
                     if skipped_count <= 3:  # Log first few skipped docs
                         logger.debug(f"Skipping document {doc.get('_id')} - already in new format (fields: {list(doc.keys())})")
                     continue
-                
+
                 # Migrate document
                 new_doc = migrate_document(doc)
-                
+
                 if args and args.dry_run:
                     logger.info(f"[DRY RUN] Would update document: {doc.get('_id')} - Title: {doc.get('title', 'N/A')[:50]}")
                     logger.info(f"  - Old structure has: clauses={bool(doc.get('clauses'))}, article={bool(doc.get('article'))}, section={bool(doc.get('section'))}, document_type={bool(doc.get('document_type'))}")
@@ -255,26 +256,26 @@ def migrate():
                             }
                         }
                     )
-                    
+
                     if update_result.modified_count > 0:
                         updated_count += 1
                         if updated_count % 100 == 0:
                             logger.info(f"Updated {updated_count} documents...")
                     else:
                         logger.warning(f"Document {doc.get('_id')} was not updated")
-                        
+
             except Exception as e:
                 logger.error(f"Error migrating document {doc.get('_id', 'unknown')}: {e}")
                 continue
-        
+
         logger.info(f"Migration complete: {updated_count} documents updated, {skipped_count} documents skipped")
-        
+
         # Drop old indexes that reference removed fields
         if not (args and args.dry_run):
             try:
                 index_info = coll.index_information()
                 indexes_to_drop = []
-                
+
                 for idx_name in index_info.keys():
                     if idx_name != "_id_":
                         idx_def = index_info[idx_name]
@@ -283,26 +284,26 @@ def migrate():
                             keys = idx_def["key"]
                             if any(key[0] in ["article", "section", "clauses"] for key in keys):
                                 indexes_to_drop.append(idx_name)
-                
+
                 for idx_name in indexes_to_drop:
                     try:
                         coll.drop_index(idx_name)
                         logger.info(f"Dropped index: {idx_name}")
                     except Exception as e:
                         logger.warning(f"Could not drop index {idx_name}: {e}")
-                
+
                 # Ensure title index exists
                 try:
                     coll.create_index("title", unique=True)
                     logger.info("Created/verified index: title (unique)")
                 except Exception as e:
                     logger.warning(f"Could not create title index: {e}")
-                    
+
             except Exception as e:
                 logger.warning(f"Error managing indexes: {e}")
-        
+
         logger.info("Migration completed successfully!")
-        
+
     except Exception as e:
         logger.error(f"Migration error: {e}", exc_info=True)
         raise

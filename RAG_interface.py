@@ -1,16 +1,23 @@
 # services/rag/RAG_interface.py
 from __future__ import annotations
-import logging
-from typing import Any, Dict, List, Tuple, Optional
 
-from services.rag.config import CLIENT_CASE_THRESHOLDS, EMBEDDING_MODEL, REPHRASE_LIMIT, TOP_QUERY_RESULT, KEYWORD_MATCH_SCORE
-from services.rag.rag_dependencies.mongo_manager import MongoManager
-from services.rag.rag_dependencies.query_manager import QueryManager
+import logging
+from typing import Any, Dict, List, Optional, Tuple
+
+from services.rag.config import (
+    CLIENT_CASE_THRESHOLDS,
+    EMBEDDING_MODEL,
+    KEYWORD_MATCH_SCORE,
+    REPHRASE_LIMIT,
+    TOP_QUERY_RESULT,
+)
 from services.rag.rag_dependencies.alias_manager import AliasManager
 from services.rag.rag_dependencies.keyword_matcher import KeywordMatcher
-from services.rag.rag_dependencies.vector_search import VectorSearchManager
 from services.rag.rag_dependencies.llm_verifier import LLMVerifier
+from services.rag.rag_dependencies.mongo_manager import MongoManager
+from services.rag.rag_dependencies.query_manager import QueryManager
 from services.rag.rag_dependencies.query_processor import QueryProcessor
+from services.rag.rag_dependencies.vector_search import VectorSearchManager
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +32,7 @@ class RAG:
         # 2. Use CLIENT_CASE_THRESHOLDS for client cases
         # 3. Fall back to us_constitution thresholds as last resort (should not happen if config is correct)
         document_type = collection.get("document_type", "")
-        
+
         if "thresholds" in collection and collection["thresholds"]:
             # Use domain-specific thresholds from collection config
             thresholds = collection["thresholds"]
@@ -38,7 +45,7 @@ class RAG:
             from services.rag.config import DOMAIN_THRESHOLDS
             thresholds = DOMAIN_THRESHOLDS.get("us_constitution", {})
             logger.warning(f"No thresholds found in collection config for {document_type}, using us_constitution thresholds as fallback. Please add domain-specific thresholds to DOMAIN_THRESHOLDS.")
-        
+
         self.config = {
             "thresholds": thresholds,
             "embedding_model": EMBEDDING_MODEL,
@@ -47,7 +54,7 @@ class RAG:
             "KEYWORD_MATCH_SCORE": KEYWORD_MATCH_SCORE,
             **collection,
         }
-        self.sql: bool = collection["sql_attached"]  
+        self.sql: bool = collection["sql_attached"]
         self.debug_mode = debug_mode
         # Core services
         self.db = MongoManager(self.config)
@@ -112,7 +119,7 @@ class RAG:
             language=language,
             query_en=query_en,
         )
-    
+
     def process_summary_bilingual(self, query: str, result_list: List[Tuple[dict, float]], index: int, language: str = "en") -> Tuple[str, Optional[str]]:
         """
         Get both English and Spanish insights.
@@ -126,7 +133,7 @@ class RAG:
                 index=index,
             )
             return (insight, None)
-        
+
         # Get insights - the function will generate both if language is es
         insight = self.processor.get_or_create_insight_by_index(
             query=query,
@@ -134,11 +141,11 @@ class RAG:
             index=index,
             language=language,
         )
-        
+
         # For English requests, only return English
         if language == "en":
             return (insight, None)
-        
+
         # For Spanish requests, we need to fetch both from cache
         # The insight generation already stored both, so we can retrieve them
         # For now, return the Spanish insight and try to get English from cache

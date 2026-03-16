@@ -1,15 +1,16 @@
 # services/rag_dependencies/mongo_manager.py
 from __future__ import annotations
-import logging
+
 import datetime
+import logging
 from typing import Any, Dict, List, Optional, Tuple, Union
-from bson import ObjectId
+
 import numpy as np
-from pymongo import MongoClient
-from pymongo import ASCENDING, TEXT, errors, ReturnDocument
-from services.rag.config import MONGO_URI
+from bson import ObjectId
+from pymongo import ASCENDING, TEXT, MongoClient, ReturnDocument, errors
 from pymongo.collation import Collation
-from pymongo.errors import OperationFailure, NetworkTimeout
+from pymongo.errors import NetworkTimeout, OperationFailure
+from services.rag.config import MONGO_URI
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ class MongoManager:
     """
     def __init__(self, config: Dict[str, Any]):
         self.config = config
-        
+
         # Get TLS configuration if available
         tls_config = {}
         try:
@@ -58,23 +59,23 @@ class MongoManager:
                     tls_config = get_mongodb_tls_config()
                 except ImportError:
                     pass
-            
+
             if tls_config:
                 logger.info("MongoDB TLS configuration loaded for MongoManager")
         except Exception as e:
             logger.warning(f"Failed to load MongoDB TLS configuration: {e}")
-        
+
         # MongoDB Atlas (mongodb+srv://) requires TLS - enable it if not already configured
         if MONGO_URI and "mongodb+srv://" in MONGO_URI:
             if not tls_config or "tls" not in tls_config:
                 tls_config = tls_config.copy() if tls_config else {}
                 tls_config["tls"] = True
                 logger.info("MongoDB Atlas detected (mongodb+srv), enabling TLS")
-        
+
         # If no TLS config and not using mongodb+srv, log a warning
         if not tls_config and (not MONGO_URI or "mongodb+srv://" not in MONGO_URI):
             logger.warning("MongoDB TLS not configured - connections may fail if server requires TLS")
-        
+
         self._client = MongoClient(
             MONGO_URI,
             maxPoolSize=50, minPoolSize=5,
@@ -101,23 +102,23 @@ class MongoManager:
     def normalize_summary_text(s: str) -> str:
         import re
         return re.sub(r"\s+", " ", (s or "").strip().lower())
-    
+
     @staticmethod
     def translate_text(text: str, source_lang: str, target_lang: str) -> Optional[str]:
         """
         Translate text from source language to target language using OpenAI.
-        
+
         Args:
             text: The text to translate
             source_lang: Source language code ('en' or 'es')
             target_lang: Target language code ('en' or 'es')
-            
+
         Returns:
             Translated text or None if translation fails
         """
         if not text or source_lang == target_lang:
             return text
-            
+
         try:
             from services.rag.rag_dependencies.ai_service import translate_insight
             return translate_insight(text, source_lang, target_lang)
@@ -154,7 +155,7 @@ class MongoManager:
     def find_query_doc_ci(self, query_str: str, projection: Optional[Dict[str, int]] = None) -> Optional[dict]:
         """
         Look up by normalized equality on `query`. For legacy docs, fall back to CI equality.
-        
+
         Args:
             query_str: Query string to look up
             projection: Optional MongoDB projection dict (e.g., {"results": 1} to only fetch results field)
@@ -241,12 +242,12 @@ class MongoManager:
                 if name in existing_indexes:
                     logger.info("[IDX] %s already exists, skipping", name)
                     return
-                
+
                 # Create index with background=True for non-blocking creation
                 # This prevents timeouts on large collections - MongoDB builds index in background
                 index_opts = opts.copy()
                 index_opts['background'] = True  # Non-blocking - doesn't lock collection
-                
+
                 try:
                     # Use a separate client with longer timeout for index creation
                     # But with background=True, this should return quickly
@@ -268,26 +269,26 @@ class MongoManager:
                         return
                     # Log but don't fail startup for other index creation errors
                     logger.warning(
-                        "[IDX] %s creation had issue (may still complete in background): %s", 
+                        "[IDX] %s creation had issue (may still complete in background): %s",
                         name, idx_err
                     )
                     return
-                    
+
             except OperationFailure as e:
                 if getattr(e, "code", None) == 85:  # IndexOptionsConflict
                     logger.warning("[IDX] %s options changed; checking for conflicting indexes", name)
-                    
+
                     # Check if we're creating a text index
                     is_text_index = False
                     if isinstance(keys, list):
                         is_text_index = any(isinstance(k, tuple) and len(k) > 1 and k[1] == TEXT for k in keys) or any(k == TEXT for k in keys)
                     elif isinstance(keys, tuple) and len(keys) > 1:
                         is_text_index = keys[1] == TEXT
-                    
+
                     # Get all existing indexes
                     existing_indexes = coll.index_information()
                     conflicting_indexes = []
-                    
+
                     if is_text_index:
                         # For text indexes, MongoDB only allows ONE text index per collection
                         # So we need to drop ALL existing text indexes
@@ -298,7 +299,7 @@ class MongoManager:
                             # Text indexes in MongoDB have keys like [("field", "text"), ...]
                             idx_keys = idx_info.get('key', [])
                             is_existing_text = False
-                            
+
                             if isinstance(idx_keys, list):
                                 # Check if any key uses TEXT type (can be "text" string or TEXT constant)
                                 for k in idx_keys:
@@ -314,13 +315,13 @@ class MongoManager:
                             elif isinstance(idx_keys, tuple) and len(idx_keys) > 1:
                                 if str(idx_keys[1]) == "text" or idx_keys[1] == TEXT:
                                     is_existing_text = True
-                            
+
                             # Also check for text index indicators in the index info
                             if not is_existing_text:
                                 # Check if index has textIndexVersion (indicates text index)
                                 if 'textIndexVersion' in idx_info:
                                     is_existing_text = True
-                            
+
                             if is_existing_text:
                                 conflicting_indexes.append(idx_name)
                     else:
@@ -332,20 +333,20 @@ class MongoManager:
                                 return (ks[0] if isinstance(ks[0], str) else str(ks[0]), ks[1] if len(ks) > 1 else 1)
                             else:
                                 return (ks, 1)
-                        
+
                         target_keys = normalize_keys(keys)
-                        
+
                         for idx_name, idx_info in existing_indexes.items():
                             if idx_name == "_id_":
                                 continue
                             # Get the key definition from the index
                             idx_keys = idx_info.get('key', [])
                             normalized_idx_keys = normalize_keys(idx_keys)
-                            
+
                             # Check if this index conflicts (same fields)
                             if normalized_idx_keys == target_keys:
                                 conflicting_indexes.append(idx_name)
-                    
+
                     # Drop all conflicting indexes
                     for idx_name in conflicting_indexes:
                         try:
@@ -353,7 +354,7 @@ class MongoManager:
                             coll.drop_index(idx_name)
                         except Exception as drop_err:
                             logger.warning("[IDX] Failed to drop conflicting index %s: %s", idx_name, drop_err)
-                    
+
                     # Now try to create the index again
                     try:
                         coll.create_index(keys, name=name, **opts)
@@ -361,7 +362,7 @@ class MongoManager:
                     except Exception as recreate_err:
                         logger.exception("[IDX] %s recreate failed after dropping conflicts", name)
                         raise
-                        
+
                 elif getattr(e, "code", None) == 11000:  # DuplicateKey
                     logger.error("[IDX] %s duplicate keys; de-duplicate data then retry", name)
                     raise
@@ -375,14 +376,14 @@ class MongoManager:
             logger.info("[IDX] dropped legacy query_norm_idx")
         except Exception:
             pass
-        
+
         # Also drop the old query_text_idx if it exists (from init_empty_collection.py)
         try:
             self.query.drop_index("query_text_idx")
             logger.info("[IDX] dropped legacy query_text_idx")
         except Exception:
             pass
-        
+
         # Drop legacy content_text_idx from init_empty_collection.py if it exists
         # This conflicts with metadata_text_index since MongoDB only allows one text index per collection
         try:
@@ -417,7 +418,7 @@ class MongoManager:
                                 if str(k[1]) == "text" or k[1] == TEXT:
                                     text_indexes_found.append(idx_name)
                                     break
-            
+
             # Drop all found text indexes (except the one we're about to create)
             for idx_name in text_indexes_found:
                 if idx_name != "metadata_text_index":
@@ -433,7 +434,7 @@ class MongoManager:
         # ---------- main collection ----------
         # Create indexes in parallel for faster startup
         from concurrent.futures import ThreadPoolExecutor, as_completed
-        
+
         main_indexes = [
             (self.main, [("article", TEXT), ("section", TEXT), ("title", TEXT)], "metadata_text_index", {
                 "default_language": "none",
@@ -444,7 +445,7 @@ class MongoManager:
             (self.main, [("title", ASCENDING)], "title_idx", {}),
             (self.main, [("section", ASCENDING)], "section_idx", {}),
         ]
-        
+
         # Create main collection indexes in parallel
         with ThreadPoolExecutor(max_workers=4) as executor:
             futures = {
@@ -457,7 +458,7 @@ class MongoManager:
                     future.result()  # Check for exceptions
                 except Exception as e:
                     logger.warning("[IDX] Parallel creation of %s had issue: %s", name, e)
-        
+
         # Pre-warm indexes by running a quick query (loads index into MongoDB's cache)
         try:
             # These queries will load indexes into MongoDB's WiredTiger cache
@@ -508,7 +509,7 @@ class MongoManager:
         """
         norm = self.normalize_query(query)
         self._ensure_query_doc(norm, language=language)
-        
+
         # Validate index against saved results array
         # Since we only generate insights from MongoDB results, this should never happen
         # But we validate as a safety check
@@ -522,7 +523,7 @@ class MongoManager:
                     f"Max valid index: {max_index}. Insights should only be generated from MongoDB results."
                 )
                 return  # Don't save insights for invalid indices
-        
+
         now = datetime.datetime.utcnow()
 
         row = {
@@ -532,7 +533,7 @@ class MongoManager:
             "created_at": now,
             "updated_at": now,
         }
-        
+
         # Add bilingual fields with normalized versions (NO automatic translation)
         if insight_en:
             row["text_en"] = insight_en.strip()
@@ -541,7 +542,7 @@ class MongoManager:
             row["text_en"] = (insight or "").strip()
             row["text_en_norm"] = self.normalize_summary_text(insight or "")
             # Note: Auto-translation removed - only store what is explicitly provided
-            
+
         if insight_es:
             row["text_es"] = insight_es.strip()
             row["text_es_norm"] = self.normalize_summary_text(insight_es)
@@ -549,7 +550,7 @@ class MongoManager:
             row["text_es"] = (insight or "").strip()
             row["text_es_norm"] = self.normalize_summary_text(insight or "")
             # Note: Auto-translation removed - only store what is explicitly provided
-        
+
         # Match insights by index only (not knowledge_id)
         pull_filter = {"index": int(index)}
 
@@ -562,15 +563,15 @@ class MongoManager:
     def get_query_with_insight(self, query: str, limit: Optional[int] = None, language: str = "en") -> List[Dict[str, Any]]:
         """
         Get cached insights for a query, returning the appropriate language version.
-        
+
         Args:
             query: The search query
             limit: Maximum number of insights to return
             language: Language code ('en' or 'es') to determine which text field to use
-            
+
         Returns:
             List of insight objects with 'text' field set to the requested language version
-        
+
         Optimized: Uses projection to only fetch the 'insights' field from MongoDB.
         """
         norm = self.normalize_query(query)
@@ -578,7 +579,7 @@ class MongoManager:
         doc = self.find_query_doc_ci(norm, projection={"insights": 1, "_id": 0})
         lst = (doc or {}).get("insights", []) or []
         lst.sort(key=lambda x: (int(x.get("index", 1_000_000)), x.get("updated_at") or datetime.datetime.min), reverse=False)
-        
+
         # Map language-specific text to the 'text' field for each insight
         for insight in lst:
             if language == "es" and "text_es" in insight and insight["text_es"]:
@@ -586,7 +587,7 @@ class MongoManager:
             elif language == "en" and "text_en" in insight and insight["text_en"]:
                 insight["text"] = insight["text_en"]
             # else: use existing 'text' field (legacy or fallback)
-        
+
         return lst[:limit] if limit else lst
 
     def add_references(self, query: str, refs: Union[List[Union[str, ObjectId]], Union[str, ObjectId]], language: Optional[str] = None) -> None:
@@ -631,10 +632,10 @@ class MongoManager:
         - dict
         - ObjectId
         - str (title only; no knowledge_id)
-        
+
         Args:
-            collection_key: Optional collection key (e.g., "US_CONSTITUTION_SET", "US_CODE_SET") 
-                          to identify which collection the knowledge_id refers to. Required when 
+            collection_key: Optional collection key (e.g., "US_CONSTITUTION_SET", "US_CODE_SET")
+                          to identify which collection the knowledge_id refers to. Required when
                           knowledge_id is present to prevent cross-domain collisions.
         """
         norm = self.normalize_query(query)
@@ -675,7 +676,7 @@ class MongoManager:
             if isinstance(res, (tuple, list)) and len(res) >= 2:
                 doc = res[0]
                 score = float(res[1]) if res[1] is not None else None
-                
+
                 if isinstance(doc, dict):
                     kid = str(doc["_id"]) if doc.get("_id") else None
                     title = _pick_title(doc)
@@ -734,12 +735,12 @@ class MongoManager:
                     {"results.collection_key": {"$exists": False}},
                     {"results.collection_key": None}
                 ]
-            
+
             existing = self.query.find_one(duplicate_filter)
             if existing:
                 # Already exists, skip to prevent duplicate
                 return
-        
+
         self.query.update_one(
             query_filter,
             {"$push": {"results": rec}}
@@ -749,10 +750,10 @@ class MongoManager:
         """
         Return results for a query in insertion order (most recent last).
         Deduplicates by (knowledge_id, collection_key) to prevent returning the same document multiple times.
-        
+
         Optimized: Uses projection to only fetch the 'results' field from MongoDB, avoiding
         large document transfers (embeddings, etc.) for faster cache retrieval.
-        
+
         Args:
             collection_key: Optional collection key to filter results. If provided, only returns
                           results matching this collection_key. If None, returns all results.
@@ -779,11 +780,11 @@ class MongoManager:
             return out
 
         projected = [_project(r) for r in lst]
-        
+
         # Filter by collection_key if provided
         if collection_key:
             projected = [r for r in projected if r.get("collection_key") == collection_key]
-        
+
         # Deduplicate by (knowledge_id, collection_key) tuple (keep first occurrence to maintain insertion order)
         # CRITICAL: Must use both knowledge_id and collection_key for deduplication since same knowledge_id
         # can exist in different collections
@@ -799,13 +800,13 @@ class MongoManager:
             else:
                 # Use title as fallback for deduplication if no knowledge_id
                 dedup_key = item.get("title")
-            
+
             if dedup_key and dedup_key in seen_keys:
                 continue
             if dedup_key:
                 seen_keys.add(dedup_key)
             deduped.append(item)
-        
+
         return deduped[:limit] if limit else deduped
 
     # ============= REPHRASE LINKING (ObjectId; no placeholders here) =============
@@ -838,10 +839,10 @@ class MongoManager:
         self.link_rephrased_id(orig["_id"], reph["_id"])
         logger.info("[QM][REPHRASE] linked '%s' -> '%s' (_id=%s)", original_query, rephrased_query, str(reph["_id"]))
         return reph["_id"]
-    
+
     def get_cases_by_titles(self, titles: List[str]) -> List[Dict[str, Any]]:
         """
-        only for client 
+        only for client
         Resolve a list of case/document titles to full docs.
 
         - Case-insensitive match on `title` (uses _QUERY_COLLATION).
@@ -915,23 +916,23 @@ class MongoManager:
             len(cleaned), len(out), missing,
         )
         return out
-    
+
     def _process_atlas_search_results(
-        self, 
-        cursor, 
-        case_titles_set: Optional[set], 
+        self,
+        cursor,
+        case_titles_set: Optional[set],
         limit: int
     ) -> Tuple[List[Tuple[Dict[str, Any], float]], int, int]:
         """
         Helper function to process Atlas Search results.
-        
+
         Returns:
             Tuple of (results, raw_count, filtered_count)
         """
         results: List[Tuple[Dict[str, Any], float]] = []
         raw_results_count = 0
         filtered_count = 0
-        
+
         for doc in cursor:
             raw_results_count += 1
             # Extract score from MongoDB Atlas Search
@@ -949,13 +950,13 @@ class MongoManager:
                         base_score = min(base_score / 10.0, 1.0)
                 except (ValueError, TypeError):
                     base_score = 0.5
-            
+
             # Remove score from doc to avoid confusion
             doc.pop("score", None)
-            
+
             # Additional filtering: ensure title matches (double-check)
             title = doc.get("title", "").strip()
-            
+
             # If we have case_titles_set, check if title matches (case-insensitive, flexible matching)
             if case_titles_set:
                 # Try exact match first
@@ -966,7 +967,7 @@ class MongoManager:
                     # Try case-insensitive match
                     title_lower = title.lower()
                     matched = any(mysql_title.lower() == title_lower for mysql_title in case_titles_set)
-                    
+
                     if matched:
                         result_doc = {k: v for k, v in doc.items() if k != "embedding"}
                         results.append((result_doc, base_score))
@@ -977,39 +978,39 @@ class MongoManager:
                 # No filtering needed - include all results
                 result_doc = {k: v for k, v in doc.items() if k != "embedding"}
                 results.append((result_doc, base_score))
-        
+
         # Sort by score descending (should already be sorted, but ensure)
         results.sort(key=lambda x: x[1], reverse=True)
-        
+
         # Limit results
         results = results[:limit]
-        
+
         return results, raw_results_count, filtered_count
-    
+
     def keyword_search_cases(self, query: str, case_docs: List[Dict[str, Any]], limit: int = 20) -> List[Tuple[Dict[str, Any], float]]:
         """
         Perform keyword search using MongoDB Atlas Search.
         Searches the MongoDB collection directly using full-text search index.
-        
+
         Args:
             query: User search query
             case_docs: List of case documents from MySQL (used for filtering results)
             limit: Maximum number of results to return
-        
+
         Returns:
             List of (doc, score) tuples sorted by relevance
         """
         if not query or not query.strip():
             return []
-        
+
         # Get the full-text search index name from config
         fulltext_index_name = self.config.get("main_fulltext_index", "fulltext_index")
         collection = self.main  # client_cases collection
-        
+
         if collection is None:
             logger.warning("[KEYWORD] MongoDB collection not available, falling back to empty results")
             return []
-        
+
         # Extract case titles from case_docs for filtering (if provided)
         # This ensures we only return results that match the MySQL cases
         case_titles_set = None
@@ -1020,16 +1021,16 @@ class MongoManager:
                 # Log sample titles for debugging
                 sample_titles = list(case_titles_set)[:3]
                 logger.debug(f"[KEYWORD] Sample MySQL titles: {sample_titles}")
-        
+
         try:
             # Check if collection has any documents first
             doc_count = collection.count_documents({})
             if doc_count == 0:
                 logger.warning(f"[KEYWORD] Collection '{collection.name}' is empty. No documents to search.")
                 return []
-            
+
             logger.info(f"[KEYWORD] Collection '{collection.name}' has {doc_count} documents")
-            
+
             # Build MongoDB Atlas Search aggregation pipeline
             # Use compound search with multiple text fields for better results
             # Try multiple field paths explicitly instead of wildcard for better compatibility
@@ -1057,7 +1058,7 @@ class MongoManager:
                     }
                 }
             }
-            
+
             pipeline = [
                 search_stage,
                 {
@@ -1073,17 +1074,17 @@ class MongoManager:
                     "$limit": limit * 2  # Get more results initially for filtering
                 }
             ]
-            
+
             # Execute MongoDB Atlas Search
             logger.info(f"[KEYWORD] Searching MongoDB collection '{collection.name}' with Atlas Search (index: {fulltext_index_name})")
             logger.info(f"[KEYWORD] Query: '{query}'")
             logger.debug(f"[KEYWORD] Pipeline: {pipeline}")
-            
+
             cursor = collection.aggregate(pipeline)
             results, raw_results_count, filtered_count = self._process_atlas_search_results(
                 cursor, case_titles_set, limit
             )
-            
+
             logger.info(f"[KEYWORD] Atlas Search: {raw_results_count} raw results, {filtered_count} filtered out, {len(results)} final matches")
             if raw_results_count > 0 and len(results) == 0:
                 logger.warning(
@@ -1095,12 +1096,12 @@ class MongoManager:
                 logger.info(f"[KEYWORD] Top {min(5, len(results))} results:")
                 for i, (doc, score) in enumerate(results[:5]):
                     logger.info(f"[KEYWORD]   {i+1}. '{doc.get('title', 'N/A')}' (score: {score:.3f})")
-            
+
             return results
-            
+
         except Exception as e:
             error_str = str(e).lower()
-            
+
             # Check if error is due to missing index
             if "index" in error_str and ("not found" in error_str or "does not exist" in error_str or "unknown" in error_str):
                 logger.error(
@@ -1143,7 +1144,7 @@ class MongoManager:
                         },
                         {"$limit": limit * 2}
                     ]
-                    logger.info(f"[KEYWORD] Retrying with simpler search query...")
+                    logger.info("[KEYWORD] Retrying with simpler search query...")
                     cursor = collection.aggregate(simple_pipeline)
                     results, raw_results_count, filtered_count = self._process_atlas_search_results(
                         cursor, case_titles_set, limit
@@ -1158,33 +1159,33 @@ class MongoManager:
                     query[:50], e,
                     exc_info=True
                 )
-            
+
             # Return empty results on error (graceful degradation)
             return []
-    
+
     def atlas_search_main(self, query: str, limit: int = 50) -> List[Tuple[Dict[str, Any], float]]:
         """
         Perform BM25 keyword search using MongoDB Atlas Search on the main collection.
         Used for hybrid search combining BM25 with semantic search.
-        
+
         Args:
             query: User search query
             limit: Maximum number of results to return
-            
+
         Returns:
             List of (doc, bm25_score) tuples sorted by relevance
         """
         if not query or not query.strip():
             return []
-        
+
         # Get the full-text search index name from config
         fulltext_index_name = self.config.get("main_fulltext_index", "fulltext_index")
         collection = self.main
-        
+
         if collection is None:
             logger.warning("[ATLAS][MAIN] MongoDB collection not available, falling back to empty results")
             return []
-        
+
         try:
             # Build MongoDB Atlas Search aggregation pipeline
             # Search multiple fields: title, article, section, summary, text
@@ -1233,7 +1234,7 @@ class MongoManager:
                     }
                 }
             }
-            
+
             pipeline = [
                 search_stage,
                 {
@@ -1251,14 +1252,14 @@ class MongoManager:
                     "$limit": limit
                 }
             ]
-            
+
             # Execute MongoDB Atlas Search
             logger.info(f"[ATLAS][MAIN] Searching collection '{collection.name}' with Atlas Search (index: {fulltext_index_name})")
             logger.info(f"[ATLAS][MAIN] Query: '{query}'")
-            
+
             cursor = collection.aggregate(pipeline)
             results: List[Tuple[Dict[str, Any], float]] = []
-            
+
             for doc in cursor:
                 # Extract BM25 score from MongoDB Atlas Search
                 score_value = doc.get("bm25_score")
@@ -1276,25 +1277,25 @@ class MongoManager:
                             bm25_score = min(bm25_score / 10.0, 1.0)
                     except (ValueError, TypeError):
                         bm25_score = 0.5
-                
+
                 # Remove score from doc to avoid confusion
                 doc.pop("bm25_score", None)
-                
+
                 # Remove embedding field from result (not needed for keyword search results)
                 result_doc = {k: v for k, v in doc.items() if k != "embedding"}
                 results.append((result_doc, bm25_score))
-            
+
             # Sort by score descending (should already be sorted, but ensure)
             results.sort(key=lambda x: x[1], reverse=True)
-            
+
             logger.info(f"[ATLAS][MAIN] Atlas Search found {len(results)} matches")
             if results:
                 logger.info(f"[ATLAS][MAIN] Top {min(5, len(results))} BM25 results:")
                 for i, (doc, score) in enumerate(results[:5]):
                     logger.info(f"[ATLAS][MAIN]   {i+1}. '{doc.get('title', 'N/A')}' (BM25 score: {score:.3f})")
-            
+
             return results
-            
+
         except Exception as e:
             # Check if error is due to missing index
             error_str = str(e).lower()
@@ -1314,7 +1315,7 @@ class MongoManager:
                 )
             # Return empty results on error (graceful degradation - will use semantic-only)
             return []
-    
+
     def track_query_cache_hit(self, normalized_query: str, cache_type: str = "query", language: Optional[str] = None) -> None:
         """
         Track a cache hit for a query.
@@ -1329,21 +1330,21 @@ class MongoManager:
                 now = datetime.datetime.now(US_WEST_TZ)
             else:
                 now = datetime.datetime.utcnow()
-            
+
             # Store datetime with time (YYYY-MM-DDTHH:MM:SS) for accurate time tracking
             datetime_str = now.strftime("%Y-%m-%dT%H:%M:%S")
             date_array_name = "query_cache_hit_dates" if cache_type == "query" else "insight_cache_hit_dates"
-            
+
             # Build update operation - only use query_cache_hit_dates array, no query_cache_hits counter
             update_op = {
                 "$set": {"updated_at": now},
                 "$push": {date_array_name: datetime_str}  # Add datetime with time to track each event
             }
-            
+
             # If language is provided, ensure it's set on the document (important for Spanish queries)
             if language:
                 update_op["$set"]["language"] = language
-            
+
             self.query.update_one(
                 {"query": normalized_query},
                 update_op,
@@ -1351,54 +1352,54 @@ class MongoManager:
             )
         except Exception as e:
             logger.warning(f"[TRACK] Failed to track cache hit: {e}")
-    
+
     def track_query_usage(self, normalized_query: str, language: str = "en", avg_relevance_score: Optional[float] = None, en_query_ref: Optional[ObjectId] = None) -> None:
         """
         Track query usage with language and average relevance score.
         Creates or updates the query document. Cache hits are tracked separately via track_cache_hit().
-        
+
         Stats are calculated from query_cache_hit_dates array length:
         - Total Calls = len(query_cache_hit_dates) + 1 (the +1 is for the initial query)
         - Cache Hits = len(query_cache_hit_dates)
-        
+
         For Spanish queries (language='es'), use en_query_ref to reference the English query
         instead of storing avg_relevance_score separately.
         """
         try:
             if not normalized_query or not normalized_query.strip():
-                logger.warning(f"[TRACK] Cannot track empty or None query")
+                logger.warning("[TRACK] Cannot track empty or None query")
                 return
-                
+
             # Get current time in US-west timezone (California)
             if US_WEST_TZ:
                 now = datetime.datetime.now(US_WEST_TZ)
             else:
                 now = datetime.datetime.utcnow()
-            
+
             # Store datetime with time (YYYY-MM-DDTHH:MM:SS) for searched_datetime array
             datetime_str = now.strftime("%Y-%m-%dT%H:%M:%S")
-            
+
             # Check if document already exists (may have been created by incremental caching via store_case_query_pairs)
             existing_doc = self.query.find_one({"query": normalized_query})
-            
+
             # Build update fields - separate $set and $setOnInsert to avoid conflicts
             # Note: We no longer use usage_count or usage_dates - everything is calculated from query_cache_hit_dates
             # IMPORTANT: Use $set to update existing documents (including those created by incremental caching)
             # and $setOnInsert only for fields that should only be set on creation
             # CRITICAL: $set only updates specified fields, preserving all other existing fields (from store_case_query_pairs)
             set_fields = {
-                "language": language, 
+                "language": language,
                 "updated_at": now,
                 "query": normalized_query  # Always set query field (required for analytics and unique index)
             }
-            
+
             set_on_insert_fields = {
                 "created_at": now
                 # Note: query_cache_hit_dates will be created by $addToSet in track_cache_hit
                 # Note: query field is set in $set, not here, to avoid MongoDB conflict
                 # Note: If document exists from incremental caching, we update it instead of creating a new one
             }
-            
+
             # Add language-specific fields
             if language == "es" and en_query_ref is not None:
                 # For Spanish queries, store reference to English query instead of avg_relevance_score
@@ -1406,18 +1407,18 @@ class MongoManager:
             elif avg_relevance_score is not None:
                 # For English queries, store average relevance score (0-1 range, will be converted to percentage in analytics)
                 set_fields["avg_relevance_score"] = float(avg_relevance_score)
-            
+
             # Build the update operation
             # Note: We don't track usage_count or usage_dates anymore - stats are calculated from query_cache_hit_dates length
             # Add searched_datetime to track when queries are searched
-            # CRITICAL: $set preserves ALL existing fields from store_case_query_pairs (searched_case_ids, search_range_size, 
+            # CRITICAL: $set preserves ALL existing fields from store_case_query_pairs (searched_case_ids, search_range_size,
             # last_search_at, query_norm, results, embedding) - it only updates the fields we specify
             update_fields = {
                 "$set": set_fields,  # This will update/merge with existing fields, NOT replace the document
                 "$setOnInsert": set_on_insert_fields,
                 "$push": {"searched_datetime": datetime_str}  # Track each search with full datetime
             }
-            
+
             # Log if document exists from incremental caching to verify merge
             if existing_doc:
                 has_cache_fields = any(key in existing_doc for key in ["searched_case_ids", "search_range_size", "last_search_at", "query_norm"])
@@ -1425,14 +1426,14 @@ class MongoManager:
                     logger.info(f"[TRACK] Found existing document with cache fields - will merge analytics fields (query: {normalized_query[:50]}...)")
                 else:
                     logger.debug(f"[TRACK] Found existing document without cache fields - will update (query: {normalized_query[:50]}...)")
-            
+
             try:
                 result = self.query.update_one(
                 {"query": normalized_query},
                 update_fields,
                 upsert=True
             )
-                
+
                 # Verify the document was created/updated
                 if result.upserted_id:
                     logger.info(f"[TRACK] Created new query document: {normalized_query[:50]}... (id: {result.upserted_id})")
@@ -1440,7 +1441,7 @@ class MongoManager:
                     logger.debug(f"[TRACK] Updated existing query document: {normalized_query[:50]}...")
                 else:
                     logger.warning(f"[TRACK] No document was created or modified for query: {normalized_query[:50]}...")
-                    
+
                 # Double-check: verify document exists with query field and verify merge
                 verify_doc = self.query.find_one({"query": normalized_query})
                 if not verify_doc:
@@ -1454,17 +1455,17 @@ class MongoManager:
                     if has_analytics and has_cache:
                         logger.info(f"[TRACK] ✅ Verified merge: document has both analytics and cache fields (query: {normalized_query[:50]}...)")
                     elif has_analytics:
-                        logger.debug(f"[TRACK] Document has analytics fields only (cache fields may be added later)")
+                        logger.debug("[TRACK] Document has analytics fields only (cache fields may be added later)")
                     elif has_cache:
-                        logger.debug(f"[TRACK] Document has cache fields only (analytics fields may be added later)")
+                        logger.debug("[TRACK] Document has cache fields only (analytics fields may be added later)")
                     else:
                         logger.debug(f"[TRACK] Document exists with query field: {normalized_query[:50]}...")
-                    
+
             except Exception as update_error:
                 # Handle specific MongoDB errors
                 error_code = getattr(update_error, 'code', None)
                 error_msg = str(update_error)
-                
+
                 if error_code == 11000:  # Duplicate key error
                     logger.warning(f"[TRACK] Duplicate key error (likely race condition). Retrying with find-then-update: {normalized_query[:50]}...")
                     # Retry with find-then-update approach
@@ -1493,7 +1494,7 @@ class MongoManager:
                                 new_doc["en_query_ref"] = en_query_ref
                             elif avg_relevance_score is not None:
                                 new_doc["avg_relevance_score"] = float(avg_relevance_score)
-                            
+
                             self.query.insert_one(new_doc)
                             logger.info(f"[TRACK] Successfully inserted new document after retry: {normalized_query[:50]}...")
                     except Exception as retry_error:
@@ -1501,7 +1502,6 @@ class MongoManager:
                 else:
                     # Re-raise if it's not a duplicate key error
                     raise
-                
+
         except Exception as e:
             logger.error(f"[TRACK] Failed to track query usage for '{normalized_query[:50] if normalized_query else 'None'}...': {e}", exc_info=True)
-    

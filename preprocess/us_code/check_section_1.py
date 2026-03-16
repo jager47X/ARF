@@ -21,21 +21,21 @@ for section in title1_sections:
         print(f"Chapter: {section.get('chapter')}")
         print(f"Section: {section.get('section')}")
         print(f"Title: {section.get('title')}")
-        
+
         # Check if it has clauses (old format) or section array (new format)
         if 'clauses' in section:
             clauses = section.get('clauses', [])
             print(f"\nHas {len(clauses)} clauses (old format)")
             if clauses:
-                print(f"\nFirst clause:")
+                print("\nFirst clause:")
                 print(json.dumps(clauses[0], indent=2))
-                print(f"\nText (first 1000 chars):")
+                print("\nText (first 1000 chars):")
                 print(clauses[0].get('text', '')[:1000])
         elif 'section' in section and isinstance(section.get('section'), list):
             sec_array = section.get('section', [])
             print(f"\nHas {len(sec_array)} section entries (new format)")
             if sec_array:
-                print(f"\nFirst section entry:")
+                print("\nFirst section entry:")
                 print(json.dumps(sec_array[0], indent=2))
         print("\n" + "=" * 80)
         break

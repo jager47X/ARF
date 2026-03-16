@@ -1,11 +1,12 @@
 # services/rag_dependencies/llm_verifier.py
 from __future__ import annotations
+
 import json
 import logging
 import re
-from typing import Any, Dict, List, Tuple
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Dict, List, Tuple
 
 from services.rag.rag_dependencies.ai_service import LLM
 
@@ -168,7 +169,7 @@ class LLMVerifier:
                 )
                 out.append((item, score))
         return out
-    
+
     # ---------- parallel (with workers) ----------
     def verify_many_parallel(
         self,
@@ -180,25 +181,25 @@ class LLMVerifier:
         """
         Parallel verification using ThreadPoolExecutor for faster processing.
         Returns [(item, adjusted_score)] in the SAME order as input.
-        
+
         Args:
             query_text: User query
             items_with_scores: List of (doc, score) tuples to verify
             item_type: Type of items (e.g., "DOC", "CASE")
             max_workers: Maximum number of parallel threads (default: 5)
-        
+
         Returns:
             List of (doc, adjusted_score) tuples in original order
         """
         if not items_with_scores:
             return []
-        
+
         logger.info("[LLM-%s] VERIFY parallel | candidates=%d | workers=%d",
                    item_type.upper(), len(items_with_scores), max_workers)
-        
+
         # Create a list to store results with their original index
         results = [None] * len(items_with_scores)
-        
+
         def verify_with_index(idx: int, item: dict, score: float):
             """Wrapper to verify a single item and return with its index"""
             try:
@@ -211,7 +212,7 @@ class LLMVerifier:
                     item_type.upper(), title, e, score
                 )
                 return (idx, (item, score))
-        
+
         # Process in parallel
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             # Submit all tasks
@@ -219,7 +220,7 @@ class LLMVerifier:
                 executor.submit(verify_with_index, idx, item, score): idx
                 for idx, (item, score) in enumerate(items_with_scores)
             }
-            
+
             # Collect results as they complete
             for future in as_completed(future_to_idx):
                 try:
@@ -227,10 +228,10 @@ class LLMVerifier:
                     results[idx] = result
                 except Exception as e:
                     idx = future_to_idx[future]
-                    logger.error("[LLM-%s] Worker failed for index %d: %s", 
+                    logger.error("[LLM-%s] Worker failed for index %d: %s",
                                item_type.upper(), idx, e)
                     # Fall back to original score
                     results[idx] = items_with_scores[idx]
-        
+
         logger.info("[LLM-%s] Parallel verification complete", item_type.upper())
         return results

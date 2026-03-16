@@ -1,15 +1,16 @@
 # ingest_cfr.py
-import os
-import sys
-import json
-import logging
 import argparse
 import datetime
-from typing import Any, Dict, List
+import json
+import logging
+import os
+import sys
 from pathlib import Path
+from typing import Any, Dict, List
+
+import bson
 from pymongo import MongoClient, WriteConcern
 from pymongo.errors import BulkWriteError
-import bson
 
 # Setup path for module execution
 # The directory is 'kyr-backend' but imports use 'backend'
@@ -31,7 +32,7 @@ if 'backend' not in sys.modules:
     # Create backend module
     backend_mod = types.ModuleType('backend')
     sys.modules['backend'] = backend_mod
-    
+
     # Load services
     services_init = backend_dir / 'services' / '__init__.py'
     services_mod = None
@@ -42,11 +43,11 @@ if 'backend' not in sys.modules:
             sys.modules['backend.services'] = services_mod
             spec.loader.exec_module(services_mod)
             setattr(backend_mod, 'services', services_mod)
-            
+
             # Also create 'services' module alias (for files using 'from services.rag.config')
             if 'services' not in sys.modules:
                 sys.modules['services'] = services_mod
-            
+
             # Load rag
             rag_init = backend_dir / 'services' / 'rag' / '__init__.py'
             rag_mod = None
@@ -57,10 +58,10 @@ if 'backend' not in sys.modules:
                     sys.modules['backend.services.rag'] = rag_mod
                     spec.loader.exec_module(rag_mod)
                     setattr(services_mod, 'rag', rag_mod)
-                    
+
                     # Also create 'services.rag' alias
                     sys.modules['services.rag'] = rag_mod
-                    
+
                     # Load config
                     config_file = backend_dir / 'services' / 'rag' / 'config.py'
                     if config_file.exists():
@@ -70,10 +71,10 @@ if 'backend' not in sys.modules:
                             sys.modules['backend.services.rag.config'] = config_mod
                             spec.loader.exec_module(config_mod)
                             setattr(rag_mod, 'config', config_mod)
-                            
+
                             # Also create 'services.rag.config' alias
                             sys.modules['services.rag.config'] = config_mod
-                            
+
                             # Load rag_dependencies
                             rag_deps_init = backend_dir / 'services' / 'rag' / 'rag_dependencies' / '__init__.py'
                             if rag_deps_init.exists():
@@ -83,7 +84,7 @@ if 'backend' not in sys.modules:
                                     sys.modules['backend.services.rag.rag_dependencies'] = rag_deps_mod
                                     spec.loader.exec_module(rag_deps_mod)
                                     setattr(rag_mod, 'rag_dependencies', rag_deps_mod)
-                                    
+
                                     # Also create 'services.rag.rag_dependencies' alias
                                     sys.modules['services.rag.rag_dependencies'] = rag_deps_mod
 
@@ -236,7 +237,7 @@ def extract_chapter_from_section(section: str, part_num: str) -> str:
     section_num = extract_section_number(section)
     if not section_num:
         return ""
-    
+
     # If section is "260.20" and part is "260", extract "2" (first digit after part)
     # Pattern: part_num.chapter.section -> extract chapter
     if section_num.startswith(part_num + "."):
@@ -245,7 +246,7 @@ def extract_chapter_from_section(section: str, part_num: str) -> str:
         match = re.search(r'^(\d+)', remaining)
         if match:
             return match.group(1)
-    
+
     return ""
 
 def extract_chapter_number(chapter: str) -> str:
@@ -278,7 +279,7 @@ def normalize_to_hierarchy(entry_obj: Dict[str, Any]) -> Dict[str, Any]:
     article_num = extract_article_number(article_text)
     part_num = extract_part_number(part_text)
     section_num = extract_section_number(section_text)
-    
+
     # Extract chapter: try from section number first, then from chapter text
     chapter_num = extract_chapter_from_section(section_text, part_num)
     if not chapter_num:
@@ -286,18 +287,18 @@ def normalize_to_hierarchy(entry_obj: Dict[str, Any]) -> Dict[str, Any]:
 
     # Convert sections array or clauses to normalized sections
     sections = []
-    
+
     # New structure: sections array
     if sections_array and isinstance(sections_array, list):
         for idx, s in enumerate(sections_array):
             section_title = s.get("title", "")
             section_text_content = s.get("text", "")
             section_number = s.get("section", "")
-            
+
             # Clean title if present
             if section_title:
                 section_title = clean_title(section_title)
-            
+
             # Only add section if we have at least title or text
             if section_text_content or section_title:
                 sections.append({
@@ -310,16 +311,16 @@ def normalize_to_hierarchy(entry_obj: Dict[str, Any]) -> Dict[str, Any]:
         for c in clauses:
             clause_title = c.get("title", "")
             clause_text = c.get("text", "")
-            
+
             # Clean title if present
             if clause_title:
                 clause_title = clean_title(clause_title)
-            
+
             # Section title: only use clause title (never use text as title)
             section_title = clause_title if clause_title else ""
             # Section text: only use clause text (never use title as text)
             section_text_content = clause_text if clause_text else ""
-            
+
             # Only add section if we have at least title or text
             if section_text_content or section_title:
                 sections.append({
@@ -377,11 +378,11 @@ def group_and_aggregate_sections(normalized_entries: List[Dict[str, Any]]) -> Li
     Returns one document per group with all sections sorted by number.
     """
     grouped = {}
-    
+
     for entry in normalized_entries:
         # Create grouping key including subchapter
         key = (entry.get("article", ""), entry.get("part", ""), entry.get("chapter", ""), entry.get("subchapter", ""))
-        
+
         if key not in grouped:
             # Initialize group with first entry's metadata
             # Use original title from first entry, or construct from metadata
@@ -398,7 +399,7 @@ def group_and_aggregate_sections(normalized_entries: List[Dict[str, Any]]) -> Li
                 if entry.get("subchapter"):
                     title_parts.append(entry['subchapter'])
                 title = " - ".join(title_parts) if title_parts else ""
-            
+
             grouped[key] = {
                 "article": entry.get("article", ""),
                 "part": entry.get("part", ""),
@@ -407,22 +408,22 @@ def group_and_aggregate_sections(normalized_entries: List[Dict[str, Any]]) -> Li
                 "title": title,
                 "sections": []
             }
-        
+
         # Add sections from this entry to the group
         entry_sections = entry.get("sections", [])
         grouped[key]["sections"].extend(entry_sections)
-    
+
     # Sort sections by number for each group
     result = []
     for key, doc in grouped.items():
         # Sort sections by number (handle both int and string numbers)
         doc["sections"].sort(key=lambda x: (
-            float(x.get("number", 0)) if isinstance(x.get("number"), (int, float)) 
+            float(x.get("number", 0)) if isinstance(x.get("number"), (int, float))
             else float(str(x.get("number", "0")).split(".")[0]) if str(x.get("number", "0")).replace(".", "").isdigit()
             else 0
         ))
         result.append(doc)
-    
+
     return result
 
 def generate_embeddings_for_docs_batch(embedder, docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -432,7 +433,7 @@ def generate_embeddings_for_docs_batch(embedder, docs: List[Dict[str, Any]]) -> 
     section_texts = []
     doc_indices = []  # Track which doc each text belongs to
     section_indices = []  # Track which section each text belongs to (doc_idx, section_idx)
-    
+
     for doc_idx, doc in enumerate(docs):
         # Document-level text
         doc_text_parts = []
@@ -446,12 +447,12 @@ def generate_embeddings_for_docs_batch(embedder, docs: List[Dict[str, Any]]) -> 
             doc_text_parts.append(f"Chapter {doc['chapter']}")
         if doc.get("section"):
             doc_text_parts.append(doc["section"])
-        
+
         doc_text = " ".join(doc_text_parts)
         if doc_text:
             doc_texts.append(doc_text)
             doc_indices.append(doc_idx)
-        
+
         # Section-level texts
         sections = doc.get("sections", [])
         for section_idx, section in enumerate(sections):
@@ -462,7 +463,7 @@ def generate_embeddings_for_docs_batch(embedder, docs: List[Dict[str, Any]]) -> 
             if section_full_text:
                 section_texts.append(section_full_text)
                 section_indices.append((doc_idx, section_idx))
-    
+
     # Generate document embeddings in batch
     if doc_texts:
         try:
@@ -472,7 +473,7 @@ def generate_embeddings_for_docs_batch(embedder, docs: List[Dict[str, Any]]) -> 
                     docs[doc_idx]["embedding"] = doc_embeddings[i].tolist() if hasattr(doc_embeddings[i], 'tolist') else list(doc_embeddings[i])
         except Exception as e:
             logger.warning(f"Failed to generate document embeddings in batch: {e}")
-    
+
     # Generate section embeddings in batch
     if section_texts:
         try:
@@ -486,7 +487,7 @@ def generate_embeddings_for_docs_batch(embedder, docs: List[Dict[str, Any]]) -> 
                     docs[doc_idx]["sections"][section_idx]["embedding"] = section_embeddings[i].tolist() if hasattr(section_embeddings[i], 'tolist') else list(section_embeddings[i])
         except Exception as e:
             logger.warning(f"Failed to generate section embeddings in batch: {e}")
-    
+
     return docs
 
 def ingest():
@@ -501,9 +502,9 @@ def ingest():
         elif MONGO_URI and ("mongodb.net" in MONGO_URI or "mongodb.com" in MONGO_URI):
             # MongoDB Atlas standard connections also require TLS
             tls_config = {"tls": True}
-        
+
         client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=30000, **tls_config)
-        
+
         # Test connection with a ping
         try:
             client.admin.command('ping')
@@ -511,7 +512,7 @@ def ingest():
         except Exception as e:
             logger.error(f"MongoDB connection test failed: {e}")
             raise
-        
+
         db = client[DB_NAME]
         coll = db.get_collection(COLL_NAME, write_concern=WriteConcern(w=0))
         logger.info("Connected to MongoDB (w=0).")
@@ -546,7 +547,7 @@ def ingest():
         # Normalize all entries
         normalized_entries: List[Dict[str, Any]] = [normalize_to_hierarchy(obj) for obj in items]
         logger.info("Normalized %d entries from JSON.", len(normalized_entries))
-        
+
         # Group entries by (article, part, chapter) and aggregate sections
         docs: List[Dict[str, Any]] = group_and_aggregate_sections(normalized_entries)
         logger.info("Grouped into %d documents (aggregated sections).", len(docs))
@@ -562,18 +563,19 @@ def ingest():
             # Also update the config module's VOYAGE_API_KEY before importing ai_service
             config_module.VOYAGE_API_KEY = CUSTOM_VOYAGE_API_KEY
             logger.info("Using custom Voyage API key for CFR embeddings")
-            
-            from backend.services.rag.rag_dependencies import ai_service
+
             # Reload the module to pick up the updated VOYAGE_API_KEY
             import importlib
+
+            from backend.services.rag.rag_dependencies import ai_service
             importlib.reload(ai_service)
             from backend.services.rag.rag_dependencies.ai_service import LLM
-            
+
             use_batch = args.batch_embeddings if args else False
             mode_str = "batch" if use_batch else "individual"
             logger.info(f"Generating embeddings using Voyage-3-large (1024 dimensions) in {mode_str} mode...")
             embedder = LLM(config=CFR_CONF)
-            
+
             if use_batch:
                 # Process in batches to avoid memory issues
                 batch_size = 50  # Process 50 documents at a time
@@ -602,7 +604,7 @@ def ingest():
                         doc_text_parts.append(f"Chapter {doc['chapter']}")
                     if doc.get("section"):
                         doc_text_parts.append(doc["section"])
-                    
+
                     doc_text = " ".join(doc_text_parts)
                     if doc_text:
                         try:
@@ -611,7 +613,7 @@ def ingest():
                                 doc["embedding"] = doc_emb.tolist() if hasattr(doc_emb, 'tolist') else list(doc_emb)
                         except Exception as e:
                             logger.warning(f"Failed to generate document embedding: {e}")
-                    
+
                     # Section-level embeddings
                     sections = doc.get("sections", [])
                     for section in sections:
@@ -626,9 +628,9 @@ def ingest():
                                     section["embedding"] = section_emb.tolist() if hasattr(section_emb, 'tolist') else list(section_emb)
                             except Exception as e:
                                 logger.warning(f"Failed to generate section embedding: {e}")
-                    
+
                     return doc
-                
+
                 # Process documents in parallel
                 with ThreadPoolExecutor(max_workers=8) as executor:
                     futures = {executor.submit(generate_embeddings_for_doc, embedder, doc): i for i, doc in enumerate(docs)}
@@ -638,7 +640,7 @@ def ingest():
                             docs[doc_idx] = future.result()
                         except Exception as e:
                             logger.error(f"Error generating embeddings for doc {doc_idx}: {e}")
-            
+
             logger.info("Embeddings generation complete.")
 
         # Deduplicate by top-level title (section/article title)
@@ -655,18 +657,18 @@ def ingest():
                 doc_size = len(bson.encode(doc))
                 if doc_size <= max_size_bytes:
                     return [doc]
-                
+
                 # Document is too large, split by sections
                 sections = doc.get("sections", [])
                 if not sections:
                     return [doc]  # Can't split if no sections
-                
+
                 # Split sections into chunks
                 split_docs = []
                 current_sections = []
                 current_size = 0
                 base_doc = {k: v for k, v in doc.items() if k != "sections"}
-                
+
                 for section in sections:
                     section_size = len(bson.encode({"sections": [section]}))
                     if current_size + section_size > max_size_bytes and current_sections:
@@ -676,28 +678,28 @@ def ingest():
                         split_docs.append(split_doc)
                         current_sections = []
                         current_size = 0
-                    
+
                     current_sections.append(section)
                     current_size += section_size
-                
+
                 # Add remaining sections
                 if current_sections:
                     split_doc = {**base_doc, "sections": current_sections}
                     if len(split_docs) > 0:
                         split_doc["title"] = f"{base_doc.get('title', '')} (Part {len(split_docs) + 1})"
                     split_docs.append(split_doc)
-                
+
                 return split_docs if split_docs else [doc]
             except Exception as e:
                 logger.warning(f"Error splitting document: {e}, inserting as-is")
                 return [doc]
-        
+
         # Split large documents
         final_docs = []
         for doc in new_docs:
             split_docs = split_large_document(doc)
             final_docs.extend(split_docs)
-        
+
         logger.info("After splitting large documents: %d documents to insert.", len(final_docs))
 
         if final_docs:
@@ -706,7 +708,7 @@ def ingest():
             for doc in final_docs:
                 doc["created_at"] = now
                 doc["updated_at"] = now
-            
+
             # Insert in smaller batches to avoid memory issues
             batch_size = 100
             total_inserted = 0
@@ -715,16 +717,16 @@ def ingest():
                 try:
                     res = coll.insert_many(batch, ordered=False)
                     total_inserted += len(res.inserted_ids)
-                    logger.info("Inserted batch %d-%d/%d documents (%d total inserted).", 
+                    logger.info("Inserted batch %d-%d/%d documents (%d total inserted).",
                               i + 1, min(i + batch_size, len(final_docs)), len(final_docs), total_inserted)
                 except BulkWriteError as bwe:
                     n = bwe.details.get("nInserted", 0)
                     total_inserted += n
-                    logger.warning("BulkWriteError in batch %d-%d; inserted %d docs (%d total inserted).", 
+                    logger.warning("BulkWriteError in batch %d-%d; inserted %d docs (%d total inserted).",
                                  i + 1, min(i + batch_size, len(final_docs)), n, total_inserted)
                 except Exception as e:
                     logger.error(f"Error inserting batch {i + 1}-{min(i + batch_size, len(final_docs))}: {e}")
-            
+
             logger.info("Total inserted: %d documents.", total_inserted)
         else:
             logger.info("No new documents to insert.")
@@ -751,7 +753,7 @@ def ingest():
                 logger.info("Restored original Voyage API key")
         except Exception as e:
             logger.debug(f"Could not restore Voyage API key: {e}")
-        
+
         if client:
             client.close()
             logger.info("Mongo connection closed.")

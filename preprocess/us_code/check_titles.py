@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Quick script to check document titles"""
-import sys
 import os
+import sys
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../..")))
-from services.rag.config import COLLECTION, MONGO_URI
 from pymongo import MongoClient
+from services.rag.config import COLLECTION, MONGO_URI
 
 US_CODE_CONF = COLLECTION.get("US_CODE_SET")
 DB_NAME = US_CODE_CONF["db_name"]

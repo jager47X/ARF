@@ -14,11 +14,12 @@ Example:
           etc.
 """
 
+import logging
 import os
 import sys
-import logging
-from typing import Dict, List, Any, Tuple
 from collections import defaultdict
+from typing import Any, Dict, List, Tuple
+
 from pymongo import MongoClient
 
 # Add parent directory to path to import config
@@ -44,18 +45,18 @@ COLL_NAME: str = US_CODE_CONF["main_collection_name"]
 def format_citation_prefix(article: str, chapter: str, section: str, clause_num: str) -> str:
     """Format citation prefix as 'Title# Chapter# Section#.#'"""
     parts = []
-    
+
     # Article (e.g., "Title 42")
     if article:
         parts.append(article)
-    
+
     # Chapter (e.g., "Chapter 6A")
     if chapter:
         if not chapter.startswith("Chapter "):
             parts.append(f"Chapter {chapter}")
         else:
             parts.append(chapter)
-    
+
     # Section (e.g., "Section 300f")
     section_str = ""
     if section:
@@ -63,7 +64,7 @@ def format_citation_prefix(article: str, chapter: str, section: str, clause_num:
         section_clean = section.replace("Section ", "").strip()
         section_str = f"Section {section_clean}"
         parts.append(section_str)
-    
+
     # Clause number (e.g., ".1", ".2") - append directly to section without space
     if clause_num:
         # Append clause number directly to the last part (section) without space
@@ -71,7 +72,7 @@ def format_citation_prefix(article: str, chapter: str, section: str, clause_num:
             parts[-1] = parts[-1] + f".{clause_num}"
         else:
             parts.append(f".{clause_num}")
-    
+
     return " ".join(parts)
 
 
@@ -85,7 +86,7 @@ def extract_original_title(title: str, doc: Dict[str, Any]) -> str:
             if isinstance(first_clause, dict):
                 return first_clause.get("title", "")
         return ""
-    
+
     # If title starts with "Title", it likely has a citation prefix
     # Try to extract the part after the citation
     parts = title.split()
@@ -108,7 +109,7 @@ def extract_original_title(title: str, doc: Dict[str, Any]) -> str:
                             if isinstance(first_clause, dict):
                                 return first_clause.get("title", "")
                         return ""
-    
+
     # No citation prefix found, return as-is
     return title
 
@@ -117,14 +118,14 @@ def find_duplicate_sections(client: MongoClient) -> Dict[Tuple[str, str, str], L
     """Find documents grouped by article+chapter+section that have duplicates."""
     db = client[DB_NAME]
     coll = db[COLL_NAME]
-    
+
     logger.info("Finding documents with duplicate article+chapter+section combinations...")
-    
+
     # Use aggregation to find duplicates
     pipeline = [
         {"$match": {
-            "article": {"$exists": True, "$ne": None, "$ne": ""},
-            "section": {"$exists": True, "$ne": None, "$ne": ""}
+            "article": {"$exists": True, "$nin": [None, ""]},
+            "section": {"$exists": True, "$nin": [None, ""]}
         }},
         {"$group": {
             "_id": {
@@ -138,14 +139,14 @@ def find_duplicate_sections(client: MongoClient) -> Dict[Tuple[str, str, str], L
         {"$match": {"count": {"$gt": 1}}},
         {"$sort": {"count": -1}}
     ]
-    
+
     duplicate_groups = list(coll.aggregate(pipeline))
-    
+
     logger.info(f"Found {len(duplicate_groups)} duplicate article+chapter+section combinations")
-    
+
     # Build detailed information for each duplicate group
     section_to_docs: Dict[Tuple[str, str, str], List[Dict[str, Any]]] = {}
-    
+
     for group in duplicate_groups:
         key = group["_id"]
         article = key.get("article", "")
@@ -153,7 +154,7 @@ def find_duplicate_sections(client: MongoClient) -> Dict[Tuple[str, str, str], L
         section = key.get("section", "")
         doc_ids = group["doc_ids"]
         count = group["count"]
-        
+
         # Fetch full documents for these IDs
         docs = list(coll.find({"_id": {"$in": doc_ids}}, {
             "_id": 1,
@@ -163,10 +164,10 @@ def find_duplicate_sections(client: MongoClient) -> Dict[Tuple[str, str, str], L
             "section": 1,
             "clauses": 1
         }))
-        
+
         section_key = (article, chapter or "", section)
         section_to_docs[section_key] = docs
-    
+
     return section_to_docs
 
 
@@ -179,29 +180,29 @@ def renumber_clauses_for_section(
     """Renumber clauses for documents in the same section."""
     db = client[DB_NAME]
     coll = db[COLL_NAME]
-    
+
     article, chapter, section = section_key
     updated_count = 0
-    
+
     # Sort documents by _id to ensure consistent ordering
     docs_sorted = sorted(docs, key=lambda d: str(d.get("_id")))
-    
+
     logger.info(f"Processing {len(docs_sorted)} documents for {article} | {chapter} | {section}")
-    
+
     for idx, doc in enumerate(docs_sorted, 1):
         doc_id = doc.get("_id")
         current_title = doc.get("title", "")
-        
+
         # Extract original title (without citation prefix if present)
         original_title = extract_original_title(current_title, doc)
         if not original_title:
             original_title = current_title
-        
+
         # Format new citation with sequential clause number
         new_clause_num = str(idx)
         new_citation = format_citation_prefix(article, chapter, section, new_clause_num)
         new_title = f"{new_citation} {original_title}".strip()
-        
+
         if dry_run:
             logger.info(f"  Would update: {doc_id}")
             logger.info(f"    Old title: '{current_title}'")
@@ -210,7 +211,7 @@ def renumber_clauses_for_section(
         else:
             # Update document
             update_fields = {"title": new_title}
-            
+
             # Also update clause number in clauses array if it exists
             clauses = doc.get("clauses", [])
             if clauses and isinstance(clauses, list) and len(clauses) > 0:
@@ -225,19 +226,19 @@ def renumber_clauses_for_section(
                     else:
                         updated_clauses.append(clause)
                 update_fields["clauses"] = updated_clauses
-            
+
             try:
                 # Log what we're trying to update
                 logger.info(f"  Updating {doc_id}:")
                 logger.info(f"    Old: '{current_title}'")
                 logger.info(f"    New: '{new_title}'")
-                
+
                 result = coll.update_one(
                     {"_id": doc_id},
                     {"$set": update_fields}
                 )
                 logger.info(f"    Result: matched={result.matched_count}, modified={result.modified_count}")
-                
+
                 if result.modified_count > 0:
                     updated_count += 1
                     logger.info(f"  ✓ Updated: {doc_id}")
@@ -247,14 +248,14 @@ def renumber_clauses_for_section(
                     logger.warning(f"  ✗ Not found: {doc_id}")
             except Exception as e:
                 logger.error(f"  ✗ Error updating {doc_id}: {e}")
-    
+
     return updated_count
 
 
 def main():
     """Main function to renumber clauses."""
     import argparse
-    
+
     parser = argparse.ArgumentParser(description="Renumber clauses for duplicate sections in US Code collection")
     parser.add_argument(
         "--dry-run",
@@ -272,15 +273,15 @@ def main():
         default=None,
         help="Limit number of duplicate section groups to process (for testing)"
     )
-    
+
     args = parser.parse_args()
-    
+
     dry_run = args.dry_run or not args.confirm
-    
+
     if not dry_run and not args.confirm:
         # Only ask for confirmation if --confirm was not explicitly passed
         try:
-            response = input(f"Are you sure you want to renumber clauses? This will modify the database! (yes/no): ")
+            response = input("Are you sure you want to renumber clauses? This will modify the database! (yes/no): ")
             if response.lower() != "yes":
                 logger.info("Update cancelled")
                 return 0
@@ -288,7 +289,7 @@ def main():
             # Non-interactive environment - require --confirm flag
             logger.error("Cannot prompt for confirmation in non-interactive environment. Use --confirm flag to proceed.")
             return 1
-    
+
     client = None
     try:
         # Configure TLS for MongoDB Atlas connections
@@ -297,48 +298,48 @@ def main():
             tls_config = {"tls": True}
         elif MONGO_URI and ("mongodb.net" in MONGO_URI or "mongodb.com" in MONGO_URI):
             tls_config = {"tls": True}
-        
+
         client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=30000, **tls_config)
-        
+
         try:
             client.admin.command('ping')
             logger.info("MongoDB connection test successful.")
         except Exception as e:
             logger.error(f"MongoDB connection test failed: {e}")
             raise
-        
+
         logger.info(f"Renumbering clauses in US Code collection: {DB_NAME}.{COLL_NAME}")
-        
+
         # Find duplicate sections
         section_to_docs = find_duplicate_sections(client)
-        
+
         if not section_to_docs:
             logger.info("No duplicate sections found")
             return 0
-        
+
         # Limit if specified
         if args.limit:
             section_to_docs = dict(list(section_to_docs.items())[:args.limit])
             logger.info(f"Processing limited to {len(section_to_docs)} duplicate section groups")
-        
+
         total_updated = 0
         total_sections = len(section_to_docs)
-        
+
         for idx, (section_key, docs) in enumerate(section_to_docs.items(), 1):
             article, chapter, section = section_key
             logger.info(f"\n[{idx}/{total_sections}] Processing: {article} | {chapter} | {section} ({len(docs)} documents)")
-            
+
             updated = renumber_clauses_for_section(client, section_key, docs, dry_run=dry_run)
             total_updated += updated
-        
+
         if dry_run:
             logger.info(f"\nThis was a dry run. {total_updated} documents would be updated.")
             logger.info("To actually update, run with --confirm flag")
         else:
             logger.info(f"\nSuccessfully updated {total_updated} documents across {total_sections} sections")
-        
+
         return 0
-        
+
     except Exception as e:
         logger.error(f"Error renumbering clauses: {e}", exc_info=True)
         return 1

@@ -4,11 +4,12 @@ Quick test script to fetch a sample of California codes to verify the process wo
 This fetches just a few sections from the Civil Code to test connectivity.
 """
 import json
+import re
+import time
+from pathlib import Path
+
 import requests
 from bs4 import BeautifulSoup
-from pathlib import Path
-import time
-import re
 
 # Base URL for California Legislative Information
 CA_LEGINFO_BASE = "https://leginfo.legislature.ca.gov"
@@ -28,29 +29,29 @@ def fetch_section(code_abbrev: str, section_num: str):
         "sectionNum": section_num,
         "lawCode": code_abbrev
     }
-    
+
     try:
         response = requests.get(url, params=params, headers=get_headers(), timeout=30)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
-        
+
         # Remove navigation elements
         for element in soup.find_all(["nav", "form", "header", "footer", "script", "style"]):
             element.decompose()
-        
+
         # Find content
         content = soup.find("div", class_=re.compile(r"section|content", re.I))
         if not content:
             content = soup.find("body")
-        
+
         if content:
             text = content.get_text(separator=" ", strip=True)
             text = re.sub(r'\s+', ' ', text).strip()
-            
+
             # Remove navigation patterns
             text = re.sub(r'Code:.*?Keyword\(s\):', '', text, flags=re.IGNORECASE | re.DOTALL)
             text = re.sub(r'\s+', ' ', text).strip()
-            
+
             return {
                 "code": "Civil Code",
                 "section": f"Section {section_num}",

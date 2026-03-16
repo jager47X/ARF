@@ -1,6 +1,6 @@
 import requests
 from bs4 import BeautifulSoup
-from fetch_ca_regulations_westlaw import get_headers, WESTLAW_INDEX
+from fetch_ca_regulations_westlaw import WESTLAW_INDEX, get_headers
 
 # Test index page
 r = requests.get(WESTLAW_INDEX, headers=get_headers(), timeout=10)

@@ -1,8 +1,8 @@
 # src/rag/keyword_matcher.py
-import re
-from typing import Optional, List, Dict, Set
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -49,56 +49,56 @@ class KeywordMatcher:
             # MongoDB Atlas can handle concurrent queries, parallelism is controlled by application (ECS)
             def load_articles():
                 article_pipeline = [
-                    {"$match": {"article": {"$exists": True, "$ne": None, "$ne": ""}}},
+                    {"$match": {"article": {"$exists": True, "$nin": [None, ""]}}},
                     {"$group": {"_id": "$article"}},
                     {"$project": {"article": "$_id"}}
                 ]
                 # Use index hint to force MongoDB to use article_idx (loads index into memory cache)
                 try:
-                    return [doc.get("article", "").strip() 
+                    return [doc.get("article", "").strip()
                            for doc in self.main.aggregate(
-                               article_pipeline, 
-                               allowDiskUse=True, 
+                               article_pipeline,
+                               allowDiskUse=True,
                                maxTimeMS=60000,
                                hint={"article": 1}  # Force index usage - keeps index in MongoDB's cache
                            )
                            if doc.get("article")]
                 except Exception:
                     # Fallback if hint fails (index might not exist yet)
-                    return [doc.get("article", "").strip() 
+                    return [doc.get("article", "").strip()
                            for doc in self.main.aggregate(article_pipeline, allowDiskUse=True, maxTimeMS=60000)
                            if doc.get("article")]
-            
+
             def load_titles():
                 title_pipeline = [
-                    {"$match": {"title": {"$exists": True, "$ne": None, "$ne": ""}}},
+                    {"$match": {"title": {"$exists": True, "$nin": [None, ""]}}},
                     {"$group": {"_id": "$title"}},
                     {"$project": {"title": "$_id"}}
                 ]
                 # Use index hint to force MongoDB to use title_idx (loads index into memory cache)
                 try:
-                    return [doc.get("title", "").strip() 
+                    return [doc.get("title", "").strip()
                            for doc in self.main.aggregate(
-                               title_pipeline, 
-                               allowDiskUse=True, 
+                               title_pipeline,
+                               allowDiskUse=True,
                                maxTimeMS=60000,
                                hint={"title": 1}  # Force index usage - keeps index in MongoDB's cache
                            )
                            if doc.get("title")]
                 except Exception:
                     # Fallback if hint fails (index might not exist yet)
-                    return [doc.get("title", "").strip() 
+                    return [doc.get("title", "").strip()
                            for doc in self.main.aggregate(title_pipeline, allowDiskUse=True, maxTimeMS=60000)
                            if doc.get("title")]
-            
+
             # Execute both aggregations in parallel (MongoDB Atlas handles concurrent queries)
             with ThreadPoolExecutor(max_workers=2) as executor:
                 article_future = executor.submit(load_articles)
                 title_future = executor.submit(load_titles)
-                
+
                 arts = article_future.result()
                 tits = title_future.result()
-            
+
             self._articles = [a for a in arts if isinstance(a, str) and a.strip() and a.strip() != "Amendment"]
             self._titles   = [t for t in tits if isinstance(t, str) and t.strip()]
             self._title_lc_to_title    = {t.lower(): t for t in self._titles}
@@ -114,7 +114,7 @@ class KeywordMatcher:
             self.article_to_sections = {}
             # Use aggregation to group by article and collect unique sections
             pipeline = [
-                {"$match": {"article": {"$exists": True, "$ne": None, "$ne": ""}}},
+                {"$match": {"article": {"$exists": True, "$nin": [None, ""]}}},
                 {"$group": {
                     "_id": "$article",
                     "sections": {"$addToSet": "$section"}
@@ -134,15 +134,15 @@ class KeywordMatcher:
             # Use index hint to force MongoDB to use article_idx (much faster)
             try:
                 cursor = self.main.aggregate(
-                    pipeline, 
-                    allowDiskUse=True, 
+                    pipeline,
+                    allowDiskUse=True,
                     maxTimeMS=60000,
                     hint={"article": 1}  # Force index usage
                 )
             except Exception:
                 # Fallback if hint fails (index might not exist yet)
                 cursor = self.main.aggregate(pipeline, allowDiskUse=True, maxTimeMS=60000)
-            
+
             for doc in cursor:
                 art = (doc.get("article") or "").strip()
                 if not art:
@@ -197,7 +197,7 @@ class KeywordMatcher:
                 # Check if number appears as a whole word in the term
                 number_pattern = rf"\b{re.escape(number)}\b"
                 word_pattern = rf"\b{re.escape(word)}\b"
-                
+
                 if re.search(number_pattern, t):
                     # Replace number with word (whole word replacement)
                     alt = re.sub(number_pattern, word, t)
@@ -206,7 +206,7 @@ class KeywordMatcher:
                     alt = re.sub(word_pattern, number, t)
                 else:
                     alt = None
-                
+
                 if alt and re.search(rf"\b{re.escape(alt)}\b", lower_q):
                     if term not in matches:
                         matches.append(term)
@@ -319,56 +319,56 @@ class KeywordMatcher:
         try:
             def load_articles():
                 article_pipeline = [
-                    {"$match": {"article": {"$exists": True, "$ne": None, "$ne": ""}}},
+                    {"$match": {"article": {"$exists": True, "$nin": [None, ""]}}},
                     {"$group": {"_id": "$article"}},
                     {"$project": {"article": "$_id"}}
                 ]
                 # Use index hint to force MongoDB to use article_idx (loads index into memory cache)
                 try:
-                    return [doc.get("article", "").strip() 
+                    return [doc.get("article", "").strip()
                            for doc in self.main.aggregate(
-                               article_pipeline, 
-                               allowDiskUse=True, 
+                               article_pipeline,
+                               allowDiskUse=True,
                                maxTimeMS=60000,
                                hint={"article": 1}  # Force index usage - keeps index in MongoDB's cache
                            )
                            if doc.get("article")]
                 except Exception:
                     # Fallback if hint fails
-                    return [doc.get("article", "").strip() 
+                    return [doc.get("article", "").strip()
                            for doc in self.main.aggregate(article_pipeline, allowDiskUse=True, maxTimeMS=60000)
                            if doc.get("article")]
-            
+
             def load_titles():
                 title_pipeline = [
-                    {"$match": {"title": {"$exists": True, "$ne": None, "$ne": ""}}},
+                    {"$match": {"title": {"$exists": True, "$nin": [None, ""]}}},
                     {"$group": {"_id": "$title"}},
                     {"$project": {"title": "$_id"}}
                 ]
                 # Use index hint to force MongoDB to use title_idx (loads index into memory cache)
                 try:
-                    return [doc.get("title", "").strip() 
+                    return [doc.get("title", "").strip()
                            for doc in self.main.aggregate(
-                               title_pipeline, 
-                               allowDiskUse=True, 
+                               title_pipeline,
+                               allowDiskUse=True,
                                maxTimeMS=60000,
                                hint={"title": 1}  # Force index usage - keeps index in MongoDB's cache
                            )
                            if doc.get("title")]
                 except Exception:
                     # Fallback if hint fails
-                    return [doc.get("title", "").strip() 
+                    return [doc.get("title", "").strip()
                            for doc in self.main.aggregate(title_pipeline, allowDiskUse=True, maxTimeMS=60000)
                            if doc.get("title")]
-            
+
             # Execute both aggregations in parallel
             with ThreadPoolExecutor(max_workers=2) as executor:
                 article_future = executor.submit(load_articles)
                 title_future = executor.submit(load_titles)
-                
+
                 arts = article_future.result()
                 tits = title_future.result()
-            
+
             self._articles = [a for a in arts if isinstance(a, str) and a.strip() and a.strip() != "Amendment"]
             self._titles   = [t for t in tits if isinstance(t, str) and t.strip()]
             self._title_lc_to_title    = {t.lower(): t for t in self._titles}
@@ -383,7 +383,7 @@ class KeywordMatcher:
             self.article_to_sections = {}
             # Use aggregation to group by article and collect unique sections
             pipeline = [
-                {"$match": {"article": {"$exists": True, "$ne": None, "$ne": ""}}},
+                {"$match": {"article": {"$exists": True, "$nin": [None, ""]}}},
                 {"$group": {
                     "_id": "$article",
                     "sections": {"$addToSet": "$section"}
@@ -403,15 +403,15 @@ class KeywordMatcher:
             # Use index hint to force MongoDB to use article_idx (loads index into memory cache)
             try:
                 cursor = self.main.aggregate(
-                    pipeline, 
-                    allowDiskUse=True, 
+                    pipeline,
+                    allowDiskUse=True,
                     maxTimeMS=60000,
                     hint={"article": 1}  # Force index usage - keeps index in MongoDB's cache
                 )
             except Exception:
                 # Fallback if hint fails
                 cursor = self.main.aggregate(pipeline, allowDiskUse=True, maxTimeMS=60000)
-            
+
             for doc in cursor:
                 art = (doc.get("article") or "").strip()
                 if not art:

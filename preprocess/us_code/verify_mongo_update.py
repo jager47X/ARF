@@ -22,7 +22,7 @@ section = entry.get('section', [])
 if isinstance(section, list):
     print(f"  section array length: {len(section)}")
     if section:
-        print(f"  First section entry:")
+        print("  First section entry:")
         sec = section[0]
         print(f"    number: {sec.get('number')}")
         print(f"    title: {sec.get('title', '')[:50]}...")

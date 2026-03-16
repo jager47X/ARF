@@ -1,14 +1,14 @@
+import argparse
+import logging
 import os
 import sys
-import logging
-import argparse
 import threading
-from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
-from pymongo import MongoClient, ASCENDING
-from pymongo.errors import DuplicateKeyError
+from pymongo import ASCENDING, MongoClient
 from pymongo.collation import Collation
+from pymongo.errors import DuplicateKeyError
 
 # Setup path for module execution
 # The directory is 'kyr-backend' but imports use 'backend'
@@ -29,7 +29,7 @@ if 'backend' not in sys.modules:
     # Create backend module
     backend_mod = types.ModuleType('backend')
     sys.modules['backend'] = backend_mod
-    
+
     # Load services
     services_init = backend_dir / 'services' / '__init__.py'
     services_mod = None
@@ -40,11 +40,11 @@ if 'backend' not in sys.modules:
             sys.modules['backend.services'] = services_mod
             spec.loader.exec_module(services_mod)
             setattr(backend_mod, 'services', services_mod)
-            
+
             # Also create 'services' module alias (for files using 'from services.rag.config')
             if 'services' not in sys.modules:
                 sys.modules['services'] = services_mod
-            
+
             # Load rag
             rag_init = backend_dir / 'services' / 'rag' / '__init__.py'
             rag_mod = None
@@ -55,10 +55,10 @@ if 'backend' not in sys.modules:
                     sys.modules['backend.services.rag'] = rag_mod
                     spec.loader.exec_module(rag_mod)
                     setattr(services_mod, 'rag', rag_mod)
-                    
+
                     # Also create 'services.rag' alias
                     sys.modules['services.rag'] = rag_mod
-                    
+
                     # Load config
                     config_file = backend_dir / 'services' / 'rag' / 'config.py'
                     if config_file.exists():
@@ -68,10 +68,10 @@ if 'backend' not in sys.modules:
                             sys.modules['backend.services.rag.config'] = config_mod
                             spec.loader.exec_module(config_mod)
                             setattr(rag_mod, 'config', config_mod)
-                            
+
                             # Also create 'services.rag.config' alias
                             sys.modules['services.rag.config'] = config_mod
-                            
+
                             # Load rag_dependencies
                             rag_deps_init = backend_dir / 'services' / 'rag' / 'rag_dependencies' / '__init__.py'
                             if rag_deps_init.exists():
@@ -81,7 +81,7 @@ if 'backend' not in sys.modules:
                                     sys.modules['backend.services.rag.rag_dependencies'] = rag_deps_mod
                                     spec.loader.exec_module(rag_deps_mod)
                                     setattr(rag_mod, 'rag_dependencies', rag_deps_mod)
-                                    
+
                                     # Also create 'services.rag.rag_dependencies' alias
                                     sys.modules['services.rag.rag_dependencies'] = rag_deps_mod
 
@@ -706,7 +706,7 @@ def _preload_existing() -> set[tuple[str, str]]:
             title = doc.get("title", "")
             title_norm = _norm(title)
             keywords = doc.get("keywords", [])
-            
+
             for kw in keywords:
                 if isinstance(kw, dict):
                     keyword = kw.get("keyword", "")
@@ -776,7 +776,7 @@ def process_alias_with_embedding(title: str, alias: str, embedding: list):
         # Check if keyword already exists
         keywords = main_doc.get("keywords", [])
         existing_keywords = {kw.get("keyword", "").lower(): kw for kw in keywords if isinstance(kw, dict)}
-        
+
         if alias.lower() in existing_keywords:
             logger.info(f"Skip (exists in DB): '{alias}' -> '{title}'")
             return None
@@ -786,7 +786,7 @@ def process_alias_with_embedding(title: str, alias: str, embedding: list):
             "keyword": alias,
             "embedding": embedding
         }
-        
+
         # Update document: add keyword to keywords array
         main_coll = get_main_collection()
         main_coll.update_one(
@@ -805,12 +805,12 @@ def process_alias_with_embedding(title: str, alias: str, embedding: list):
 # ----------------------------
 def ingest_alias_map(title_to_aliases: dict[str, list[str]], max_workers: int = 8):
     pairs = _unique_pairs(title_to_aliases)
-    
+
     # Filter out duplicates and collect valid aliases
     valid_pairs = []
     alias_texts = []
     alias_to_pair = {}  # Map alias text to (title, alias) pair
-    
+
     for title, alias in pairs:
         alias_norm, title_norm = _norm(alias), _norm(title)
         key = (alias_norm, title_norm)
@@ -818,28 +818,28 @@ def ingest_alias_map(title_to_aliases: dict[str, list[str]], max_workers: int = 
             if key in existing or key in seen_in_run:
                 logger.info(f"Skip (pre-schedule dup): '{alias}' -> '{title}'")
                 continue
-        
+
         # Check if document exists and keyword doesn't exist
         main_coll = get_main_collection()
         main_doc = main_coll.find_one({"title": title})
         if not main_doc:
             logger.warning(f"Main document not found for title: '{title}', skipping alias '{alias}'")
             continue
-        
+
         keywords = main_doc.get("keywords", [])
         existing_keywords = {kw.get("keyword", "").lower(): kw for kw in keywords if isinstance(kw, dict)}
         if alias.lower() in existing_keywords:
             logger.info(f"Skip (exists in DB): '{alias}' -> '{title}'")
             continue
-        
+
         valid_pairs.append((title, alias))
         alias_texts.append(alias)
         alias_to_pair[alias] = (title, alias)
-    
+
     if not alias_texts:
         logger.info("No aliases to process after filtering.")
         return
-    
+
     # Generate embeddings in batch
     logger.info(f"Generating embeddings for {len(alias_texts)} aliases using batch API...")
     try:
@@ -849,7 +849,7 @@ def ingest_alias_map(title_to_aliases: dict[str, list[str]], max_workers: int = 
     except Exception as e:
         logger.error(f"Failed to generate batch embeddings: {e}")
         return
-    
+
     # Process aliases with their embeddings
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         tasks = []
@@ -859,7 +859,7 @@ def ingest_alias_map(title_to_aliases: dict[str, list[str]], max_workers: int = 
                 tasks.append(executor.submit(process_alias_with_embedding, title, alias, vec_list))
             else:
                 logger.warning(f"Missing embedding for alias '{alias}' -> '{title}'")
-        
+
         for fut in as_completed(tasks):
             _ = fut.result()
 

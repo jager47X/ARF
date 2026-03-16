@@ -9,11 +9,12 @@ This script identifies duplicates based on:
 4. Documents with same content but different _id
 """
 
+import logging
 import os
 import sys
-import logging
-from typing import Dict, List, Any, Tuple
 from collections import defaultdict
+from typing import Any, Dict, List, Tuple
+
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure
 
@@ -41,9 +42,9 @@ def check_duplicate_titles(client: MongoClient) -> List[Dict[str, Any]]:
     """Check for documents with duplicate titles."""
     db = client[DB_NAME]
     coll = db[COLL_NAME]
-    
+
     logger.info("Checking for duplicate titles...")
-    
+
     # Use aggregation to find duplicate titles
     pipeline = [
         {"$group": {
@@ -54,9 +55,9 @@ def check_duplicate_titles(client: MongoClient) -> List[Dict[str, Any]]:
         {"$match": {"count": {"$gt": 1}}},
         {"$sort": {"count": -1}}
     ]
-    
+
     duplicates = list(coll.aggregate(pipeline))
-    
+
     if duplicates:
         logger.warning(f"Found {len(duplicates)} duplicate titles:")
         for dup in duplicates[:20]:  # Show first 20
@@ -69,7 +70,7 @@ def check_duplicate_titles(client: MongoClient) -> List[Dict[str, Any]]:
                 logger.warning(f"    ... and {len(doc_ids) - 5} more")
     else:
         logger.info("✓ No duplicate titles found")
-    
+
     return duplicates
 
 
@@ -77,14 +78,14 @@ def check_duplicate_article_chapter_section(client: MongoClient) -> List[Dict[st
     """Check for documents with duplicate article + chapter + section combinations."""
     db = client[DB_NAME]
     coll = db[COLL_NAME]
-    
+
     logger.info("Checking for duplicate article + chapter + section combinations...")
-    
+
     # Use aggregation to find duplicates
     pipeline = [
         {"$match": {
-            "article": {"$exists": True, "$ne": None, "$ne": ""},
-            "section": {"$exists": True, "$ne": None, "$ne": ""}
+            "article": {"$exists": True, "$nin": [None, ""]},
+            "section": {"$exists": True, "$nin": [None, ""]}
         }},
         {"$group": {
             "_id": {
@@ -99,9 +100,9 @@ def check_duplicate_article_chapter_section(client: MongoClient) -> List[Dict[st
         {"$match": {"count": {"$gt": 1}}},
         {"$sort": {"count": -1}}
     ]
-    
+
     duplicates = list(coll.aggregate(pipeline))
-    
+
     if duplicates:
         logger.warning(f"Found {len(duplicates)} duplicate article+chapter+section combinations:")
         for dup in duplicates[:20]:  # Show first 20
@@ -116,7 +117,7 @@ def check_duplicate_article_chapter_section(client: MongoClient) -> List[Dict[st
                 logger.warning(f"    ... and {len(doc_ids) - 3} more")
     else:
         logger.info("✓ No duplicate article+chapter+section combinations found")
-    
+
     return duplicates
 
 
@@ -124,19 +125,19 @@ def check_empty_text_documents(client: MongoClient) -> List[Dict[str, Any]]:
     """Check for documents with no text content."""
     db = client[DB_NAME]
     coll = db[COLL_NAME]
-    
+
     logger.info("Checking for documents with no text content...")
-    
+
     # Find documents with no text in clauses
     empty_text_docs = []
-    
+
     # Check documents with clauses
     docs_with_clauses = coll.find({"clauses": {"$exists": True, "$ne": []}})
-    
+
     for doc in docs_with_clauses:
         clauses = doc.get("clauses", [])
         has_text = False
-        
+
         # Check if any clause has text
         for clause in clauses:
             if isinstance(clause, dict):
@@ -144,7 +145,7 @@ def check_empty_text_documents(client: MongoClient) -> List[Dict[str, Any]]:
                 if clause_text and str(clause_text).strip():
                     has_text = True
                     break
-        
+
         if not has_text:
             # Check root-level text as fallback
             root_text = doc.get("text") or doc.get("summary") or doc.get("content") or doc.get("body")
@@ -157,12 +158,12 @@ def check_empty_text_documents(client: MongoClient) -> List[Dict[str, Any]]:
                     "section": doc.get("section"),
                     "clauses_count": len(clauses)
                 })
-    
+
     # Also check documents without clauses
     docs_without_clauses = coll.find({
         "clauses": {"$exists": False}
     })
-    
+
     for doc in docs_without_clauses:
         root_text = doc.get("text") or doc.get("summary") or doc.get("content") or doc.get("body")
         if not root_text or not str(root_text).strip():
@@ -174,7 +175,7 @@ def check_empty_text_documents(client: MongoClient) -> List[Dict[str, Any]]:
                 "section": doc.get("section"),
                 "clauses_count": 0
             })
-    
+
     if empty_text_docs:
         logger.warning(f"Found {len(empty_text_docs)} documents with no text content:")
         for doc in empty_text_docs[:20]:  # Show first 20
@@ -184,7 +185,7 @@ def check_empty_text_documents(client: MongoClient) -> List[Dict[str, Any]]:
                           f"Clauses: {doc['clauses_count']}")
     else:
         logger.info("✓ All documents have text content")
-    
+
     return empty_text_docs
 
 
@@ -192,16 +193,16 @@ def check_wrong_document_type(client: MongoClient) -> List[Dict[str, Any]]:
     """Check for documents that might have wrong document_type indicators."""
     db = client[DB_NAME]
     coll = db[COLL_NAME]
-    
+
     logger.info("Checking for documents with potential document_type issues...")
-    
+
     issues = []
-    
+
     # Check for documents with sections array (should be CFR, not US Code)
     docs_with_sections = coll.find({
         "sections": {"$exists": True, "$ne": []}
     })
-    
+
     for doc in docs_with_sections:
         issues.append({
             "_id": doc.get("_id"),
@@ -211,12 +212,12 @@ def check_wrong_document_type(client: MongoClient) -> List[Dict[str, Any]]:
             "chapter": doc.get("chapter"),
             "section": doc.get("section")
         })
-    
+
     # Check for documents with keywords array (should be US Constitution, not US Code)
     docs_with_keywords = coll.find({
         "keywords": {"$exists": True, "$ne": []}
     })
-    
+
     for doc in docs_with_keywords:
         issues.append({
             "_id": doc.get("_id"),
@@ -226,7 +227,7 @@ def check_wrong_document_type(client: MongoClient) -> List[Dict[str, Any]]:
             "chapter": doc.get("chapter"),
             "section": doc.get("section")
         })
-    
+
     if issues:
         logger.warning(f"Found {len(issues)} documents with potential document_type issues:")
         for issue in issues[:20]:  # Show first 20
@@ -234,7 +235,7 @@ def check_wrong_document_type(client: MongoClient) -> List[Dict[str, Any]]:
             logger.warning(f"    Issue: {issue['issue']}")
     else:
         logger.info("✓ No document_type issues found")
-    
+
     return issues
 
 
@@ -242,21 +243,21 @@ def get_collection_stats(client: MongoClient) -> Dict[str, Any]:
     """Get collection statistics."""
     db = client[DB_NAME]
     coll = db[COLL_NAME]
-    
+
     total_count = coll.count_documents({})
-    
+
     # Count documents with clauses
     docs_with_clauses = coll.count_documents({"clauses": {"$exists": True, "$ne": []}})
-    
+
     # Count documents with sections (shouldn't be in US Code)
     docs_with_sections = coll.count_documents({"sections": {"$exists": True, "$ne": []}})
-    
+
     # Count documents with keywords (shouldn't be in US Code)
     docs_with_keywords = coll.count_documents({"keywords": {"$exists": True, "$ne": []}})
-    
+
     # Count documents with article field
-    docs_with_article = coll.count_documents({"article": {"$exists": True, "$ne": None, "$ne": ""}})
-    
+    docs_with_article = coll.count_documents({"article": {"$exists": True, "$nin": [None, ""]}})
+
     return {
         "total_documents": total_count,
         "documents_with_clauses": docs_with_clauses,
@@ -276,19 +277,19 @@ def main():
             tls_config = {"tls": True}
         elif MONGO_URI and ("mongodb.net" in MONGO_URI or "mongodb.com" in MONGO_URI):
             tls_config = {"tls": True}
-        
+
         client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=30000, **tls_config)
-        
+
         try:
             client.admin.command('ping')
             logger.info("MongoDB connection test successful.")
         except Exception as e:
             logger.error(f"MongoDB connection test failed: {e}")
             raise
-        
+
         logger.info(f"Checking US Code collection: {DB_NAME}.{COLL_NAME}")
         logger.info("=" * 80)
-        
+
         # Get collection statistics
         stats = get_collection_stats(client)
         logger.info("\nCollection Statistics:")
@@ -297,38 +298,38 @@ def main():
         logger.info(f"  Documents with sections: {stats['documents_with_sections']} (unexpected for US Code)")
         logger.info(f"  Documents with keywords: {stats['documents_with_keywords']} (unexpected for US Code)")
         logger.info(f"  Documents with article: {stats['documents_with_article']}")
-        
+
         logger.info("\n" + "=" * 80)
-        
+
         # Check for duplicates
         duplicate_titles = check_duplicate_titles(client)
-        
+
         logger.info("\n" + "=" * 80)
-        
+
         duplicate_combos = check_duplicate_article_chapter_section(client)
-        
+
         logger.info("\n" + "=" * 80)
-        
+
         empty_text_docs = check_empty_text_documents(client)
-        
+
         logger.info("\n" + "=" * 80)
-        
+
         wrong_type_docs = check_wrong_document_type(client)
-        
+
         logger.info("\n" + "=" * 80)
         logger.info("\nSummary:")
         logger.info(f"  Duplicate titles: {len(duplicate_titles)}")
         logger.info(f"  Duplicate article+chapter+section: {len(duplicate_combos)}")
         logger.info(f"  Documents with no text: {len(empty_text_docs)}")
         logger.info(f"  Documents with wrong type indicators: {len(wrong_type_docs)}")
-        
+
         if duplicate_titles or duplicate_combos or empty_text_docs or wrong_type_docs:
             logger.warning("\n⚠ Issues found! Review the details above.")
             return 1
         else:
             logger.info("\n✓ No issues found!")
             return 0
-        
+
     except Exception as e:
         logger.error(f"Error checking duplicates: {e}", exc_info=True)
         return 1

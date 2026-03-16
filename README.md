@@ -497,22 +497,6 @@ Measured on 15 US Constitution benchmark queries. Each strategy runs in its **ow
 >
 > Run `python benchmarks/run_ablation.py --production` to reproduce.
 
-### Hallucination & Faithfulness
-
-Evaluated using an LLM-as-judge approach (`benchmarks/hallucination_eval.py`) — compares generated summaries against source documents to detect unsupported claims.
-
-| Metric | Value |
-|--------|-------|
-| Faithfulness rate | **60%** (3/5 summaries fully faithful) |
-| Hallucination rate | **40%** (2/5 contained unsupported claims) |
-| Avg faithfulness score | **0.82** |
-
-**Detected hallucinations:**
-- *"the right to keep and bear arms for all citizens, **with no restrictions whatsoever**"* — the 2nd Amendment text does not say "no restrictions"
-- *"Congress has the power to **declare war**"* — not present in the Article I Section 8 excerpt tested
-
-> The evaluator correctly identifies when summaries add claims not supported by the source text. This validates ARF's threshold gates — by only returning high-confidence results (`score ≥ 0.85`), the system reduces the surface area for hallucination in downstream LLM summarization.
-
 ### Cost Analysis
 
 | Metric | MongoDB Atlas (no pipeline) | Full ARF Pipeline |
