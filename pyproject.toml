@@ -3,8 +3,8 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "arf"
-version = "0.2.0"
+name = "advanced-rag-framework"
+version = "0.2.1"
 description = "Advanced Retrieval Framework — dependency-free retrieval pipeline toolkit"
 readme = "README.md"
 license = "MIT"
