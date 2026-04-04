@@ -18,7 +18,7 @@ Quick start::
     results = pipeline.run("what is due process")
 """
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 from arf.document import Document, DocumentConfig
 from arf.features import FeatureExtractor
