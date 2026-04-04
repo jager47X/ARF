@@ -4,7 +4,6 @@
 [![PyPI](https://img.shields.io/pypi/v/advanced-rag-framework.svg)](https://pypi.org/project/advanced-rag-framework/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Code style: Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 
 A **zero-dependency** retrieval pipeline toolkit. Plug in your own vector search, embedding model, LLM, ML model, and database — ARF provides the routing algorithms, feature engineering, rephrase-graph caching, and score blending.
 
