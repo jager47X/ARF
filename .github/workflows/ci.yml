@@ -24,8 +24,11 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[dev]"
 
-      - name: Run tests
-        run: pytest tests/ -v
+      - name: Run arf library tests
+        run: pytest tests/test_arf/ -v
+
+      - name: Run full tests
+        run: pip install -e ".[full]" && pytest tests/ -v
 
   lint:
     runs-on: ubuntu-latest
@@ -41,7 +44,7 @@ jobs:
         run: pip install ruff
 
       - name: Ruff lint
-        run: ruff check config.py config_schema.py rag_dependencies/ tests/
+        run: ruff check arf/ config.py config_schema.py rag_dependencies/ tests/
 
       - name: Ruff format check
         run: ruff format --check config_schema.py tests/
