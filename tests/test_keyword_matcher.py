@@ -274,7 +274,7 @@ class TestConfigThresholds:
             assert not missing, f"{domain} missing threshold keys: {missing}"
 
     def test_thresholds_are_numeric(self):
-        non_numeric_keys = {"mlp_model_path"}
+        non_numeric_keys = {"mlp_model_path", "mlp_hidden_layer_sizes", "mlp_activation"}
         for domain, thr in DOMAIN_THRESHOLDS.items():
             for key, val in thr.items():
                 if key in non_numeric_keys:

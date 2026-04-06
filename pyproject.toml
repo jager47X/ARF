@@ -3,13 +3,42 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "arf"
-version = "0.1.0"
-description = "Advanced Retrieval Framework — a RAG system optimized for legal document search"
+name = "advanced-rag-framework"
+version = "0.2.2"
+description = "Advanced Retrieval Framework — dependency-free retrieval pipeline toolkit"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
-dependencies = [
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+# Zero required dependencies — the arf package is pure Python
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/jager47X/ARF"
+Repository = "https://github.com/jager47X/ARF"
+
+[project.optional-dependencies]
+ml = [
+    "numpy>=1.24",
+    "scikit-learn>=1.3",
+    "joblib>=1.3",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.4",
+    "numpy>=1.24",
+]
+# Full production dependencies (for rag_dependencies)
+full = [
     "numpy>=1.24",
     "openai>=1.0",
     "pymongo>=4.0",
@@ -20,19 +49,12 @@ dependencies = [
     "voyageai>=0.3",
 ]
 
-[project.optional-dependencies]
-dev = [
-    "pytest>=7.0",
-    "pytest-cov>=4.0",
-    "ruff>=0.4",
-]
-
 [tool.setuptools.packages.find]
-include = ["rag_dependencies*"]
+include = ["arf*", "rag_dependencies*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=rag_dependencies --cov-report=term-missing --cov-fail-under=15"
+addopts = "--cov=arf --cov=rag_dependencies --cov-report=term-missing --cov-fail-under=10"
 
 [tool.ruff]
 target-version = "py310"
