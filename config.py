@@ -159,9 +159,15 @@ DOMAIN_THRESHOLDS = {
         "FILTER_GAP": 0.20,  # if there is higer gap comapre to the top result dont show the
         "LLM_SCORE": 0.10,
         "use_mlp_reranker": True,  # Toggle MLP reranking
-        "mlp_uncertainty_low": 0.4,  # Below this = reject
-        "mlp_uncertainty_high": 0.6,  # Above this = accept
+        "mlp_uncertainty_low": 0.4,  # Below this = reject (tune via --optimize-thresholds)
+        "mlp_uncertainty_high": 0.6,  # Above this = accept (tune via --optimize-thresholds)
         "mlp_model_path": "models/mlp_reranker.joblib",
+        # MLP hyperparameters (tune via train_reranker.py --optimize)
+        "mlp_alpha": 1e-4,               # L2 regularization strength
+        "mlp_learning_rate_init": 1e-3,   # Initial learning rate
+        "mlp_hidden_layer_sizes": "128,64,32",  # Architecture
+        "mlp_activation": "relu",         # Activation function
+        "mlp_max_iter": 500,              # Max training iterations
     },
     "code_of_federal_regulations": {
         "query_search": 0.65,            # Fixed — do not tune automatically
@@ -173,9 +179,14 @@ DOMAIN_THRESHOLDS = {
         "FILTER_GAP": 0.20,  # if there is higer gap comapre to the top result dont show the
         "LLM_SCORE": 0.10,
         "use_mlp_reranker": True,  # Toggle MLP reranking
-        "mlp_uncertainty_low": 0.4,  # Below this = reject
-        "mlp_uncertainty_high": 0.6,  # Above this = accept
+        "mlp_uncertainty_low": 0.4,  # Below this = reject (tune via --optimize-thresholds)
+        "mlp_uncertainty_high": 0.6,  # Above this = accept (tune via --optimize-thresholds)
         "mlp_model_path": "models/mlp_reranker.joblib",
+        "mlp_alpha": 1e-4,
+        "mlp_learning_rate_init": 1e-3,
+        "mlp_hidden_layer_sizes": "128,64,32",
+        "mlp_activation": "relu",
+        "mlp_max_iter": 500,
     },
     "us_code": {
         "query_search": 0.65,            # Fixed — do not tune automatically
@@ -187,9 +198,14 @@ DOMAIN_THRESHOLDS = {
         "FILTER_GAP": 0.20,  # if there is higer gap comapre to the top result dont show the
         "LLM_SCORE": 0.10,
         "use_mlp_reranker": True,  # Toggle MLP reranking
-        "mlp_uncertainty_low": 0.4,  # Below this = reject
-        "mlp_uncertainty_high": 0.6,  # Above this = accept
+        "mlp_uncertainty_low": 0.4,  # Below this = reject (tune via --optimize-thresholds)
+        "mlp_uncertainty_high": 0.6,  # Above this = accept (tune via --optimize-thresholds)
         "mlp_model_path": "models/mlp_reranker.joblib",
+        "mlp_alpha": 1e-4,
+        "mlp_learning_rate_init": 1e-3,
+        "mlp_hidden_layer_sizes": "128,64,32",
+        "mlp_activation": "relu",
+        "mlp_max_iter": 500,
     },
     "uscis_policy": {
         "query_search": 0.65,            # Fixed — do not tune automatically
@@ -201,9 +217,14 @@ DOMAIN_THRESHOLDS = {
         "FILTER_GAP": 0.20,  # if there is higer gap comapre to the top result dont show the
         "LLM_SCORE": 0.10,
         "use_mlp_reranker": True,  # Toggle MLP reranking
-        "mlp_uncertainty_low": 0.4,  # Below this = reject
-        "mlp_uncertainty_high": 0.6,  # Above this = accept
+        "mlp_uncertainty_low": 0.4,  # Below this = reject (tune via --optimize-thresholds)
+        "mlp_uncertainty_high": 0.6,  # Above this = accept (tune via --optimize-thresholds)
         "mlp_model_path": "models/mlp_reranker.joblib",
+        "mlp_alpha": 1e-4,
+        "mlp_learning_rate_init": 1e-3,
+        "mlp_hidden_layer_sizes": "128,64,32",
+        "mlp_activation": "relu",
+        "mlp_max_iter": 500,
     }
 }
 #
