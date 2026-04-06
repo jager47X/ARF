@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "advanced-rag-framework"
-version = "0.2.1"
+version = "0.2.2"
 description = "Advanced Retrieval Framework — dependency-free retrieval pipeline toolkit"
 readme = "README.md"
 license = "MIT"

@@ -181,6 +181,9 @@ class MLPReranker:
         calibrate: bool = True,
         feature_names: Optional[List[str]] = None,
         random_state: int = 42,
+        alpha: float = 1e-4,
+        learning_rate_init: float = 1e-3,
+        activation: str = "relu",
     ) -> Dict[str, Any]:
         """Train a new MLP model in-place.
 
@@ -193,6 +196,9 @@ class MLPReranker:
             calibrate: Apply isotonic calibration after training.
             feature_names: Optional names for each feature column.
             random_state: Random seed for reproducibility.
+            alpha: L2 regularization strength.
+            learning_rate_init: Initial learning rate for Adam optimizer.
+            activation: Activation function ('relu', 'tanh', 'logistic').
 
         Returns:
             Dict with training metrics (accuracy, f1, auc, etc.).
@@ -210,8 +216,8 @@ class MLPReranker:
         from sklearn.preprocessing import StandardScaler
 
         logger.info(
-            "Training MLP: samples=%d, features=%d, arch=%s, calibrate=%s",
-            X.shape[0], X.shape[1], hidden_layer_sizes, calibrate,
+            "Training MLP: samples=%d, features=%d, arch=%s, alpha=%s, lr=%s, activation=%s, calibrate=%s",
+            X.shape[0], X.shape[1], hidden_layer_sizes, alpha, learning_rate_init, activation, calibrate,
         )
 
         # Scale features
@@ -221,8 +227,10 @@ class MLPReranker:
         # Base MLP
         mlp = MLPClassifier(
             hidden_layer_sizes=hidden_layer_sizes,
-            activation="relu",
+            activation=activation,
             solver="adam",
+            alpha=alpha,
+            learning_rate_init=learning_rate_init,
             max_iter=max_iter,
             early_stopping=early_stopping,
             validation_fraction=0.1 if early_stopping else 0.0,
@@ -269,6 +277,10 @@ class MLPReranker:
         self._feature_names = feature_names
         self._metadata = {
             "hidden_layer_sizes": list(hidden_layer_sizes),
+            "alpha": alpha,
+            "learning_rate_init": learning_rate_init,
+            "activation": activation,
+            "max_iter": max_iter,
             "n_samples": int(X.shape[0]),
             "n_features": int(X.shape[1]),
             "metrics": metrics,

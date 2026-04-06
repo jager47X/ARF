@@ -49,6 +49,22 @@ class DomainThresholds(BaseModel):
         default=None, ge=0.0, le=1.0, description="MLP probability above this = accept"
     )
     mlp_model_path: Optional[str] = Field(default=None, description="Path to MLP reranker model file")
+    # MLP hyperparameter tuning settings (optional — used by train_reranker.py --optimize)
+    mlp_alpha: Optional[float] = Field(
+        default=None, ge=0.0, description="L2 regularization strength for MLP"
+    )
+    mlp_learning_rate_init: Optional[float] = Field(
+        default=None, gt=0.0, description="Initial learning rate for MLP Adam optimizer"
+    )
+    mlp_hidden_layer_sizes: Optional[str] = Field(
+        default=None, description="MLP architecture as comma-separated ints, e.g. '128,64,32'"
+    )
+    mlp_activation: Optional[str] = Field(
+        default=None, description="MLP activation function: relu, tanh, logistic"
+    )
+    mlp_max_iter: Optional[int] = Field(
+        default=None, gt=0, description="Maximum training iterations for MLP"
+    )
 
     @model_validator(mode="after")
     def check_threshold_ordering(self) -> "DomainThresholds":

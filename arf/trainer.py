@@ -52,6 +52,9 @@ def train_reranker(
     feature_names: Optional[List[str]] = None,
     random_state: int = 42,
     save_path: Optional[str] = None,
+    alpha: float = 1e-4,
+    learning_rate_init: float = 1e-3,
+    activation: str = "relu",
 ) -> Dict[str, Any]:
     """Train an MLP relevance classifier.
 
@@ -66,6 +69,9 @@ def train_reranker(
         feature_names: Optional ordered list of feature names.
         random_state: Random seed for reproducibility.
         save_path: If provided, save the model bundle to this path.
+        alpha: L2 regularization strength.
+        learning_rate_init: Initial learning rate for the Adam optimizer.
+        activation: Activation function ('relu', 'tanh', 'logistic').
 
     Returns:
         Dict with keys ``"metrics"`` (accuracy, precision, recall, f1,
@@ -90,10 +96,13 @@ def train_reranker(
     y = np.asarray(y, dtype=np.int64)
 
     logger.info(
-        "Training MLP: samples=%d, features=%d, arch=%s, calibrate=%s",
+        "Training MLP: samples=%d, features=%d, arch=%s, alpha=%s, lr=%s, activation=%s, calibrate=%s",
         X.shape[0],
         X.shape[1],
         architecture,
+        alpha,
+        learning_rate_init,
+        activation,
         calibrate,
     )
 
@@ -102,8 +111,10 @@ def train_reranker(
 
     mlp = MLPClassifier(
         hidden_layer_sizes=architecture,
-        activation="relu",
+        activation=activation,
         solver="adam",
+        alpha=alpha,
+        learning_rate_init=learning_rate_init,
         max_iter=max_iter,
         early_stopping=early_stopping,
         validation_fraction=0.1 if early_stopping else 0.0,
@@ -146,6 +157,10 @@ def train_reranker(
 
     metadata = {
         "hidden_layer_sizes": list(architecture),
+        "alpha": alpha,
+        "learning_rate_init": learning_rate_init,
+        "activation": activation,
+        "max_iter": max_iter,
         "n_samples": int(X.shape[0]),
         "n_features": int(X.shape[1]),
         "metrics": metrics,

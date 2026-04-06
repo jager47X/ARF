@@ -17,6 +17,15 @@ pipeline.  Supports multiple training modes:
     # Retrain from previously cached features (no MongoDB needed)
     python benchmarks/train_reranker.py --retrain --features-cache benchmarks/features_cache.json
 
+    # Train with hyperparameter optimization (searches learning rate, alpha, architecture, etc.)
+    python benchmarks/train_reranker.py --dataset benchmarks/eval_dataset.json --optimize --optimize-iter 50
+
+    # Train and find optimal uncertainty thresholds per domain
+    python benchmarks/train_reranker.py --dataset benchmarks/eval_dataset.json --optimize-thresholds
+
+    # Full optimization: hyperparams + thresholds
+    python benchmarks/train_reranker.py --dataset benchmarks/eval_dataset.json --optimize --optimize-thresholds --production
+
 The pipeline:
     1. Loads evaluation queries (benchmark_queries.json or eval_dataset.json)
     2. Generates features via MongoDB vector search for each query-doc pair
@@ -64,6 +73,25 @@ MODEL_CONFIGS = {
     "logistic_regression": {"type": "logistic"},
     "mlp_2layer_64_32": {"type": "mlp", "hidden_layer_sizes": (64, 32)},
     "mlp_3layer_128_64_32": {"type": "mlp", "hidden_layer_sizes": (128, 64, 32)},
+}
+
+# Hyperparameter search space for MLP optimization
+MLP_PARAM_DISTRIBUTIONS = {
+    "hidden_layer_sizes": [
+        (32, 16),
+        (64, 32),
+        (64, 32, 16),
+        (128, 64),
+        (128, 64, 32),
+        (256, 128, 64),
+    ],
+    "activation": ["relu", "tanh"],
+    "solver": ["adam"],
+    "alpha": [1e-5, 1e-4, 1e-3, 1e-2, 1e-1],
+    "learning_rate_init": [1e-4, 5e-4, 1e-3, 5e-3, 1e-2],
+    "max_iter": [300, 500, 800],
+    "early_stopping": [True],
+    "validation_fraction": [0.1, 0.15],
 }
 
 
@@ -242,9 +270,11 @@ def _build_model(config: dict, random_state: int = 42):
     elif config["type"] == "mlp":
         return MLPClassifier(
             hidden_layer_sizes=config["hidden_layer_sizes"],
-            activation="relu",
-            solver="adam",
-            max_iter=500,
+            activation=config.get("activation", "relu"),
+            solver=config.get("solver", "adam"),
+            alpha=config.get("alpha", 1e-4),
+            learning_rate_init=config.get("learning_rate_init", 1e-3),
+            max_iter=config.get("max_iter", 500),
             early_stopping=True,
             validation_fraction=0.1,
             random_state=random_state,
@@ -400,6 +430,207 @@ def compare_models(
 
 
 # ======================================================================
+# Hyperparameter Optimization
+# ======================================================================
+
+def optimize_hyperparameters(
+    X: np.ndarray,
+    y: np.ndarray,
+    n_iter: int = 30,
+    n_splits: int = 5,
+    random_state: int = 42,
+    scoring: str = "f1",
+) -> Dict[str, Any]:
+    """Run randomized hyperparameter search over MLP configurations.
+
+    Uses RandomizedSearchCV to explore the search space defined in
+    MLP_PARAM_DISTRIBUTIONS.  Returns the best parameters and CV results.
+
+    Args:
+        X: Feature matrix (n_samples, n_features).
+        y: Binary labels.
+        n_iter: Number of random parameter settings to try.
+        n_splits: Cross-validation folds.
+        random_state: Seed for reproducibility.
+        scoring: Metric to optimize ('f1', 'roc_auc', 'precision', 'recall').
+
+    Returns:
+        Dict with keys: best_params, best_score, cv_results (top 10).
+    """
+    from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold
+    from sklearn.neural_network import MLPClassifier
+    from sklearn.preprocessing import StandardScaler
+
+    logger.info(
+        "Starting hyperparameter optimization: n_iter=%d, cv=%d, scoring=%s",
+        n_iter, n_splits, scoring,
+    )
+
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+
+    # Adapt CV folds to dataset size
+    min_class_count = min(np.sum(y == 0), np.sum(y == 1))
+    actual_splits = min(n_splits, max(2, int(min_class_count)))
+    if actual_splits < n_splits:
+        logger.warning("Reduced CV folds from %d to %d (min class count=%d)",
+                        n_splits, actual_splits, min_class_count)
+
+    cv = StratifiedKFold(n_splits=actual_splits, shuffle=True, random_state=random_state)
+
+    mlp = MLPClassifier(random_state=random_state, verbose=False)
+
+    search = RandomizedSearchCV(
+        mlp,
+        param_distributions=MLP_PARAM_DISTRIBUTIONS,
+        n_iter=min(n_iter, _count_param_combinations()),
+        cv=cv,
+        scoring=scoring,
+        n_jobs=-1,
+        random_state=random_state,
+        refit=False,
+        return_train_score=False,
+        error_score=0.0,
+    )
+
+    search.fit(X_scaled, y)
+
+    # Collect top-10 results for the report
+    results_df = []
+    for i in range(len(search.cv_results_["mean_test_score"])):
+        results_df.append({
+            "rank": int(search.cv_results_["rank_test_score"][i]),
+            "mean_score": round(float(search.cv_results_["mean_test_score"][i]), 4),
+            "std_score": round(float(search.cv_results_["std_test_score"][i]), 4),
+            "params": {
+                k: list(v) if isinstance(v, tuple) else v
+                for k, v in search.cv_results_["params"][i].items()
+            },
+        })
+    results_df.sort(key=lambda x: x["rank"])
+    top_results = results_df[:10]
+
+    best_params = {
+        k: list(v) if isinstance(v, tuple) else v
+        for k, v in search.best_params_.items()
+    }
+
+    logger.info("Best params (score=%.4f): %s", search.best_score_, best_params)
+
+    return {
+        "best_params": best_params,
+        "best_score": round(float(search.best_score_), 4),
+        "scoring_metric": scoring,
+        "n_iter": len(results_df),
+        "cv_folds": actual_splits,
+        "top_results": top_results,
+    }
+
+
+def _count_param_combinations() -> int:
+    """Count total combinations in MLP_PARAM_DISTRIBUTIONS."""
+    total = 1
+    for values in MLP_PARAM_DISTRIBUTIONS.values():
+        total *= len(values)
+    return total
+
+
+# ======================================================================
+# Threshold Optimization
+# ======================================================================
+
+def optimize_thresholds(
+    X: np.ndarray,
+    y: np.ndarray,
+    domain_labels: np.ndarray,
+    model,
+    scaler,
+) -> Dict[str, Dict[str, float]]:
+    """Find optimal uncertainty thresholds per domain.
+
+    Searches for the best (low, high) threshold pair that maximizes the
+    combined metric:  accuracy on confident predictions + coverage (fraction
+    of predictions that are confident rather than sent to LLM).
+
+    Args:
+        X: Feature matrix.
+        y: True labels.
+        domain_labels: Domain name per sample.
+        model: Trained sklearn model with predict_proba.
+        scaler: Fitted StandardScaler.
+
+    Returns:
+        Dict mapping domain -> {"mlp_uncertainty_low": float, "mlp_uncertainty_high": float,
+                                 "confident_accuracy": float, "coverage": float}.
+        Also includes an "overall" key for the global optimum.
+    """
+    from sklearn.metrics import accuracy_score
+
+    X_scaled = scaler.transform(X)
+    probas = model.predict_proba(X_scaled)[:, 1]
+
+    def _evaluate_thresholds(probs, labels, low, high):
+        """Evaluate a (low, high) threshold pair."""
+        confident_mask = (probs <= low) | (probs >= high)
+        n_confident = np.sum(confident_mask)
+        coverage = n_confident / len(probs) if len(probs) > 0 else 0.0
+
+        if n_confident == 0:
+            return {"accuracy": 0.0, "coverage": 0.0, "score": 0.0}
+
+        confident_preds = (probs[confident_mask] >= high).astype(int)
+        confident_labels = labels[confident_mask]
+        acc = accuracy_score(confident_labels, confident_preds)
+
+        # Combined score: reward both accuracy and coverage
+        # Higher weight on accuracy (0.7) vs coverage (0.3)
+        combined = 0.7 * acc + 0.3 * coverage
+        return {"accuracy": round(acc, 4), "coverage": round(coverage, 4), "score": round(combined, 4)}
+
+    # Search grid for thresholds
+    low_candidates = np.arange(0.20, 0.50, 0.05)
+    high_candidates = np.arange(0.50, 0.85, 0.05)
+
+    results = {}
+
+    # Per-domain optimization
+    unique_domains = np.unique(domain_labels)
+    for domain in list(unique_domains) + ["overall"]:
+        if domain == "overall":
+            mask = np.ones(len(y), dtype=bool)
+        else:
+            mask = domain_labels == domain
+            if np.sum(mask) < 10:
+                continue
+
+        domain_probas = probas[mask]
+        domain_labels_y = y[mask]
+
+        best_low, best_high, best_score = 0.4, 0.6, -1.0
+        for low in low_candidates:
+            for high in high_candidates:
+                if high <= low:
+                    continue
+                ev = _evaluate_thresholds(domain_probas, domain_labels_y, low, high)
+                if ev["score"] > best_score:
+                    best_score = ev["score"]
+                    best_low, best_high = float(low), float(high)
+
+        final_eval = _evaluate_thresholds(domain_probas, domain_labels_y, best_low, best_high)
+        results[str(domain)] = {
+            "mlp_uncertainty_low": round(best_low, 2),
+            "mlp_uncertainty_high": round(best_high, 2),
+            "confident_accuracy": final_eval["accuracy"],
+            "coverage": final_eval["coverage"],
+            "combined_score": final_eval["score"],
+            "n_samples": int(np.sum(mask)),
+        }
+
+    logger.info("Threshold optimization results: %s", results)
+    return results
+
+
+# ======================================================================
 # Feature Importance
 # ======================================================================
 
@@ -528,6 +759,15 @@ def main():
     parser.add_argument("--dev", action="store_const", const="dev", dest="env")
     parser.add_argument("--local", action="store_const", const="local", dest="env")
     parser.add_argument("--n-splits", type=int, default=5, help="CV fold count")
+    parser.add_argument("--optimize", action="store_true",
+                        help="Run hyperparameter optimization (RandomizedSearchCV)")
+    parser.add_argument("--optimize-iter", type=int, default=30,
+                        help="Number of random parameter settings to try during optimization")
+    parser.add_argument("--optimize-metric", type=str, default="f1",
+                        choices=["f1", "roc_auc", "precision", "recall", "accuracy"],
+                        help="Metric to optimize during hyperparameter search")
+    parser.add_argument("--optimize-thresholds", action="store_true",
+                        help="Find optimal uncertainty thresholds per domain")
     args = parser.parse_args()
 
     env = args.env or "production"
@@ -591,15 +831,52 @@ def main():
         print(f"  {r['model_name']:<30} {agg.get('f1', 0):>8.4f} {agg.get('auc_roc', 0):>8.4f} "
               f"{agg.get('precision', 0):>8.4f} {agg.get('recall', 0):>8.4f} {agg.get('accuracy', 0):>8.4f}{marker}")
 
-    # ----- Step 4: Train final model -----
-    print(f"\n  Training final model ({best_model_name}) on full dataset with calibration...")
+    # ----- Step 3b: Hyperparameter optimization (optional) -----
+    optimization_results = None
+    optimized_params = {}
+    if args.optimize:
+        print(f"\n  {'='*50}")
+        print(f"  Hyperparameter Optimization (n_iter={args.optimize_iter}, metric={args.optimize_metric})")
+        print(f"  {'='*50}")
 
+        optimization_results = optimize_hyperparameters(
+            X, y,
+            n_iter=args.optimize_iter,
+            n_splits=args.n_splits,
+            scoring=args.optimize_metric,
+        )
+        optimized_params = optimization_results["best_params"]
+
+        print(f"\n  Best score ({args.optimize_metric}): {optimization_results['best_score']}")
+        print(f"  Best params: {optimized_params}")
+        print("\n  Top 5 configurations:")
+        for i, r in enumerate(optimization_results["top_results"][:5]):
+            arch = r["params"].get("hidden_layer_sizes", "?")
+            alpha = r["params"].get("alpha", "?")
+            lr = r["params"].get("learning_rate_init", "?")
+            print(f"    {i+1}. score={r['mean_score']:.4f} arch={arch} alpha={alpha} lr={lr}")
+
+    # ----- Step 4: Train final model -----
     from rag_dependencies.mlp_reranker import MLPReranker
 
     reranker = MLPReranker()
     best_config = MODEL_CONFIGS[best_model_name]
 
-    if best_config["type"] == "mlp":
+    # Use optimized params if available, otherwise fall back to model comparison winner
+    if optimized_params:
+        train_kwargs = {
+            "hidden_layer_sizes": tuple(optimized_params.get("hidden_layer_sizes", (128, 64, 32))),
+            "max_iter": optimized_params.get("max_iter", 500),
+            "calibrate": True,
+            "feature_names": feature_names,
+            "alpha": optimized_params.get("alpha", 1e-4),
+            "learning_rate_init": optimized_params.get("learning_rate_init", 1e-3),
+            "activation": optimized_params.get("activation", "relu"),
+        }
+        print(f"\n  Training final model with optimized params: {train_kwargs}")
+        final_metrics = reranker.train(X, y, **train_kwargs)
+    elif best_config["type"] == "mlp":
+        print(f"\n  Training final model ({best_model_name}) on full dataset with calibration...")
         final_metrics = reranker.train(
             X, y,
             hidden_layer_sizes=best_config["hidden_layer_sizes"],
@@ -608,6 +885,7 @@ def main():
         )
     else:
         # For logistic regression, train via MLPReranker with a single wide layer
+        print(f"\n  Training final model ({best_model_name}) on full dataset with calibration...")
         final_metrics = reranker.train(
             X, y,
             hidden_layer_sizes=(max(n_features, 16),),
@@ -652,6 +930,28 @@ def main():
         for fi in feature_importance[:5]:
             print(f"    {fi['feature']:<30} importance={fi['importance_mean']:.4f}")
 
+    # ----- Step 6b: Threshold optimization (optional) -----
+    threshold_results = None
+    if args.optimize_thresholds and reranker.is_loaded:
+        print(f"\n  {'='*50}")
+        print("  Threshold Optimization (per domain)")
+        print(f"  {'='*50}")
+
+        threshold_results = optimize_thresholds(
+            X, y, domains,
+            model=reranker._model,
+            scaler=reranker._scaler,
+        )
+
+        print(f"\n  {'Domain':<35} {'Low':>6} {'High':>6} {'Acc':>8} {'Cov':>8}")
+        print(f"  {'-'*68}")
+        for domain, vals in threshold_results.items():
+            print(f"  {domain:<35} {vals['mlp_uncertainty_low']:>6.2f} {vals['mlp_uncertainty_high']:>6.2f} "
+                  f"{vals['confident_accuracy']:>8.4f} {vals['coverage']:>8.4f}")
+
+        print("\n  To apply these thresholds, update DOMAIN_THRESHOLDS in config.py")
+        print("  or pass them via the config schema.")
+
     # ----- Step 7: Save model -----
     model_path = args.model_output
     reranker.save(model_path)
@@ -668,6 +968,12 @@ def main():
         n_positive=int(np.sum(y == 1)),
         calibration_quality=calibration_quality,
     )
+
+    # Add optimization results to report
+    if optimization_results:
+        report["hyperparameter_optimization"] = optimization_results
+    if threshold_results:
+        report["threshold_optimization"] = threshold_results
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     report_path = RESULTS_DIR / "training_report.json"
