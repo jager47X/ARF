@@ -96,3 +96,15 @@ def test_document_no_text():
     doc = Document.from_dict(raw)
     assert doc.content == ""
     assert doc.title == ""
+
+
+def test_document_custom_embedding_field():
+    cfg = DocumentConfig(embedding_field="vec", children_fields=["parts"])
+    raw = {"_id": "e1", "title": "T", "text": "...", "vec": [1.0, 0.0], "parts": [{"text": "child", "vec": [0.0, 1.0]}]}
+    doc = Document.from_dict(raw, cfg)
+    assert doc.embedding == [1.0, 0.0]
+    assert doc.children[0].embedding == [0.0, 1.0]
+    assert "vec" not in doc.metadata  # the embedding field is not duplicated into metadata
+    # The default field name is "embedding"
+    assert DocumentConfig().embedding_field == "embedding"
+    assert Document.from_dict({"embedding": [0.5]}).embedding == [0.5]

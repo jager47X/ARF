@@ -12,8 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   uncertain and there is no `llm_fn`), "needs review" candidates are returned at their retrieval
   score instead of being silently dropped. The previous behaviour is available with
   `Pipeline(unreviewed_policy="drop")` (`arf/pipeline.py`)
+- **Keyword hits are merged on the semantic scale** — `keyword_fn` results are no longer
+  max-merged with cosine scores. A hit also found by vector search keeps its cosine score, a
+  keyword-only hit is re-scored by cosine against its stored embedding, and one without an
+  embedding gets `keyword_floor` (default `verify_threshold`); all hits receive `keyword_boost`
+  (default 0.05). `Pipeline(keyword_mode="max")` restores the old merge (`arf/pipeline.py`)
 
 ### Added
+- `DocumentConfig.embedding_field` (default `"embedding"`) — the field holding a document's stored
+  embedding, used by `Document.from_dict` and keyword re-scoring (`arf/document.py`)
+- `arf.features.cosine_similarity` public helper
 - **Threshold-calibration warning** — the pipeline logs a one-time warning (with the top observed
   score) when triage rejects every candidate, which usually means the thresholds don't match the
   embedding model's score range (`arf/pipeline.py`)

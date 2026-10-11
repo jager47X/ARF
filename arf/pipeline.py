@@ -19,10 +19,10 @@ import logging
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from arf.document import Document, DocumentConfig
-from arf.features import FeatureExtractor
+from arf.features import FeatureExtractor, cosine_similarity
 from arf.query_graph import follow_rephrase_chain
 from arf.score_parser import adjust_score as _adjust_score
-from arf.triage import Triage
+from arf.triage import Triage, _default_key_fn
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,8 @@ class Pipeline:
         preprocess_fn: ``(query) -> str``
         moderate_fn: ``(query) -> bool`` (True = safe)
         rephrase_fn: ``(query, previous_attempts) -> str | None``
-        keyword_fn: ``(query) -> [(dict, float), ...]``
+        keyword_fn: ``(query) -> [(dict, float), ...]`` — lexical / keyword
+            hits.  Their raw scores are only used in ``keyword_mode="max"``.
         resolve_fn: ``(parent_id) -> dict | None``
         summarize_fn: ``(query, Document, context_list) -> str``
         graph_max_hops: Max rephrase chain depth.
@@ -62,9 +63,23 @@ class Pipeline:
             / *llm_fn*, or the MLP was uncertain and there is no *llm_fn*).
             ``"keep"`` (default) returns them at their retrieval score;
             ``"drop"`` discards them (pre-0.3.0 behaviour).
+        keyword_mode: How *keyword_fn* hits are merged with vector candidates.
+            ``"rescore"`` (default) puts them on the semantic scale: a hit
+            that is also a vector candidate keeps its cosine score; a
+            keyword-only hit is scored by cosine against its stored embedding
+            (``doc_config.embedding_field``) or, when it has none, assigned
+            *keyword_floor*.  Every hit then receives *keyword_boost*.
+            ``"max"`` merges the raw keyword scores as-is (pre-0.3.0
+            behaviour — only sensible if they are already cosine-like).
+        keyword_floor: Score given to keyword-only hits that have no
+            embedding.  Defaults to ``triage.verify_threshold`` so they are
+            sent for review rather than accepted or rejected outright.
+        keyword_boost: Additive bonus applied to every keyword hit in
+            ``"rescore"`` mode (result capped at 1.0).
     """
 
     _UNREVIEWED_POLICIES = ("keep", "drop")
+    _KEYWORD_MODES = ("rescore", "max")
 
     def __init__(
         self,
@@ -99,9 +114,14 @@ class Pipeline:
         predict_zones: Tuple[float, float] = (0.4, 0.6),
         max_rephrase: int = 2,
         unreviewed_policy: str = "keep",
+        keyword_mode: str = "rescore",
+        keyword_floor: Optional[float] = None,
+        keyword_boost: float = 0.05,
     ):
         if unreviewed_policy not in self._UNREVIEWED_POLICIES:
             raise ValueError(f"unreviewed_policy must be one of {self._UNREVIEWED_POLICIES}, got {unreviewed_policy!r}")
+        if keyword_mode not in self._KEYWORD_MODES:
+            raise ValueError(f"keyword_mode must be one of {self._KEYWORD_MODES}, got {keyword_mode!r}")
 
         self.doc_config = doc_config or DocumentConfig()
         self.triage = triage or Triage()
@@ -127,6 +147,9 @@ class Pipeline:
         self.predict_zones = predict_zones
         self.max_rephrase = max_rephrase
         self.unreviewed_policy = unreviewed_policy
+        self.keyword_mode = keyword_mode
+        self.keyword_floor = keyword_floor
+        self.keyword_boost = keyword_boost
 
         # Emitted at most once per instance so a mis-calibrated threshold
         # setup is visible without flooding the logs on every query.
@@ -236,7 +259,7 @@ class Pipeline:
         if self.keyword_fn is not None:
             kw_results = self.keyword_fn(query) or []
             if kw_results:
-                candidates = self.triage.dedupe(candidates, kw_results)
+                candidates = self._merge_keyword_hits(candidates, kw_results, embedding)
 
         # Triage — split into accept / needs_review / reject
         result = self.triage.classify(candidates)
@@ -271,6 +294,40 @@ class Pipeline:
             merged = self.triage.gap_filter(merged)
 
         return merged[: top_k]
+
+    def _merge_keyword_hits(
+        self, candidates: List[Scored], kw_results: List[Scored], query_embedding: Any
+    ) -> List[Scored]:
+        """Merge keyword hits into the vector candidates on one score scale.
+
+        Keyword scores (BM25, text-index ranks, ...) are not comparable with
+        cosine similarities, so in ``"rescore"`` mode each hit is given a
+        semantic score first (see the *keyword_mode* docs) and only then
+        merged.  ``dedupe`` keeps the higher score per document, so a hit
+        present in both lists ends up with its (boosted) cosine score.
+        """
+        if self.keyword_mode == "max":
+            return self.triage.dedupe(candidates, kw_results)
+
+        floor = self.keyword_floor if self.keyword_floor is not None else self.triage.verify_threshold
+        semantic_by_key = {_default_key_fn(item): float(score) for item, score in candidates}
+
+        rescored: List[Scored] = []
+        for item, _keyword_score in kw_results:
+            key = _default_key_fn(item)
+            if key in semantic_by_key:
+                base = semantic_by_key[key]
+            else:
+                doc_embedding = self._embedding_of(item)
+                base = cosine_similarity(query_embedding, doc_embedding) if doc_embedding is not None else floor
+            rescored.append((item, min(1.0, base + self.keyword_boost)))
+
+        return self.triage.dedupe(candidates, rescored)
+
+    def _embedding_of(self, item: Any) -> Optional[Any]:
+        if isinstance(item, dict):
+            return item.get(self.doc_config.embedding_field)
+        return getattr(item, "embedding", None)
 
     def _warn_all_rejected(self, candidates: List[Scored]) -> None:
         """Warn (once) when search returned candidates but triage rejected them all.

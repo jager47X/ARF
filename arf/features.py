@@ -93,6 +93,10 @@ def _cosine_similarity(vec_a: Any, vec_b: Any) -> float:
         return _cosine_similarity_manual(vec_a, vec_b)
 
 
+# Public alias — also used by the pipeline to put keyword hits on the semantic scale.
+cosine_similarity = _cosine_similarity
+
+
 def _jaccard_similarity(text_a: str, text_b: str) -> float:
     tokens_a = set(_tokenize(text_a))
     tokens_b = set(_tokenize(text_b))
