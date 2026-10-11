@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from arf.document import Document, DocumentConfig
-from arf.features import FeatureExtractor, cosine_similarity
+from arf.features import CorpusStats, FeatureExtractor, cosine_similarity
 from arf.query_graph import follow_rephrase_chain, normalize_query
 from arf.score_parser import extract_score, multiplier
 from arf.triage import Triage
@@ -78,6 +78,9 @@ class Pipeline:
     Args:
         doc_config: Document field mapping.
         triage: Triage instance with threshold settings.
+        corpus_stats: :class:`~arf.features.CorpusStats` for the MLP's
+            ``bm25_score`` feature — must be the same stats the model was
+            trained with.
         search_fn: ``(embedding, top_k) -> [(dict, float), ...]``
         embed_fn: ``(text) -> [float, ...]``
         predict_fn: ``(feature_vectors) -> [float, ...]`` (probabilities)
@@ -197,6 +200,7 @@ class Pipeline:
         # Core config
         doc_config: Optional[DocumentConfig] = None,
         triage: Optional[Triage] = None,
+        corpus_stats: Optional[CorpusStats] = None,
         # Required functions
         search_fn: Callable,
         embed_fn: Callable,
@@ -259,7 +263,7 @@ class Pipeline:
 
         self.doc_config = doc_config or DocumentConfig()
         self.triage = triage or Triage()
-        self.features = FeatureExtractor(self.doc_config)
+        self.features = FeatureExtractor(self.doc_config, corpus_stats=corpus_stats)
         self._key_fn = _make_key_fn(self.doc_config)
 
         self.search_fn = search_fn

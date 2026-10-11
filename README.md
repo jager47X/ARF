@@ -116,12 +116,13 @@ doc = Document.from_dict({"name": "Guide", "body": "...", "category": "Medical"}
 
 Works with any database. MongoDB, PostgreSQL, DynamoDB, Pinecone, FAISS — just map your fields.
 
-### Features — 15-feature extraction
+### Features — 16-feature extraction
 
 ```python
-from arf import FeatureExtractor
+from arf import CorpusStats, FeatureExtractor
 
-extractor = FeatureExtractor(config)
+stats = CorpusStats.from_documents(all_docs, config)   # once, at ingest time (optional)
+extractor = FeatureExtractor(config, corpus_stats=stats)
 features = extractor.extract_features(query="...", document={...}, semantic_score=0.85)
 vector = extractor.to_vector(features)  # [0.85, 4.2, 0, 0, ...]
 ```
@@ -129,20 +130,26 @@ vector = extractor.to_vector(features)  # [0.85, 4.2, 0, 0, ...]
 | Feature | Description |
 |---------|-------------|
 | `semantic_score` | Raw cosine similarity from vector search |
-| `bm25_score` | Term-frequency relevance approximation |
+| `bm25_score` | BM25 of the query against the text — real IDF weights and corpus average length when `CorpusStats` are given, otherwise a saturated term-frequency overlap |
 | `alias_match` | Whether query matches a document alias |
 | `keyword_match` | Whether query matches via keyword pattern |
 | `domain_type` | Encoded domain identifier |
 | `document_length` | Log-scaled character count |
-| `query_length` | Query character count |
+| `query_length` | Log-scaled query token count |
 | `section_depth` | Depth in document hierarchy |
-| `embedding_cosine_similarity` | Direct embedding cosine similarity |
+| `embedding_cosine_similarity` | Cosine between query and stored document embedding (equals `semantic_score` when no document embedding is available) |
 | `match_type` | 0=none, 1=partial, 2=exact |
-| `score_gap_from_top` | Gap from highest-scored document |
+| `score_gap_from_top` | Gap from the query's highest-scored document |
 | `query_term_coverage` | Fraction of query terms in document |
 | `title_similarity` | Jaccard similarity between query and title |
+| `exact_phrase_match` | Whether the query occurs verbatim (contiguous tokens) in the title or text |
 | `has_nested_content` | Whether document has children |
 | `bias_adjustment` | Configurable per-document bias |
+
+`FEATURE_VERSION` (currently 2) is recorded in every model bundle; `load_reranker` warns (or
+raises with `strict=True`) when a model was trained on another version. Persist `CorpusStats`
+with `to_dict()` / `from_dict()` and pass the same stats to `Pipeline(corpus_stats=...)` so
+training and inference agree.
 
 All title, hierarchy, text and embedding lookups go through your `DocumentConfig`
 (`title_field`, `hierarchy`, `text_fields`, `children_fields`, `embedding_field`), so a schema
@@ -379,7 +386,7 @@ The core innovation — each stage filters candidates so the next stage does les
                                │ survivors
                     ┌──────────▼───────────┐
                     │  Feature Extraction  │
-                    │  (15 features)       │
+                    │  (16 features)       │
                     └──────────┬───────────┘
                                │ feature vectors
                     ┌──────────▼───────────┐

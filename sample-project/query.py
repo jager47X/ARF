@@ -23,7 +23,7 @@ import voyageai
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from arf import DocumentConfig, Pipeline, Triage
+from arf import CorpusStats, DocumentConfig, Pipeline, Triage
 from arf.trainer import load_reranker
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
@@ -40,6 +40,7 @@ OUT_DIR = Path(__file__).resolve().parent
 INDEX_PATH = OUT_DIR / "faiss.index"
 DOCS_PATH = OUT_DIR / "docs.json"
 MODEL_PATH = OUT_DIR / "recipe_reranker.joblib"
+STATS_PATH = OUT_DIR / "corpus_stats.json"
 
 # Load stored docs and FAISS index
 with open(DOCS_PATH, "r", encoding="utf-8") as f:
@@ -138,16 +139,21 @@ def cache_store(query: str, results: list) -> None:
 # ── Build pipeline ───────────────────────────────────────────────
 
 def build_pipeline() -> Pipeline:
-    # Load MLP reranker if available
+    # Load MLP reranker (and the corpus stats it was trained with) if available
     predict_fn = None
+    corpus_stats = None
     if MODEL_PATH.exists():
         predict_fn = load_reranker(str(MODEL_PATH))
         print("  MLP reranker loaded.")
+        if STATS_PATH.exists():
+            with open(STATS_PATH, "r", encoding="utf-8") as f:
+                corpus_stats = CorpusStats.from_dict(json.load(f))
     else:
         print("  No MLP model found — using threshold + LLM only.")
 
     return Pipeline(
         doc_config=recipe_config,
+        corpus_stats=corpus_stats,
         triage=Triage(
             min_score=0.30,          # FAISS cosine similarity is typically lower range
             accept_threshold=0.60,

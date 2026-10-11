@@ -21,7 +21,7 @@ Quick start::
 __version__ = "0.3.0"
 
 from arf.document import Document, DocumentConfig
-from arf.features import FeatureExtractor
+from arf.features import CorpusStats, FeatureExtractor
 from arf.ingest import IngestResult, ingest_documents
 from arf.pipeline import Pipeline
 from arf.query_graph import ChainResult, follow_rephrase_chain
@@ -37,6 +37,7 @@ __all__ = [
     "DocumentConfig",
     # Features
     "FeatureExtractor",
+    "CorpusStats",
     # Triage
     "Triage",
     "TriageResult",

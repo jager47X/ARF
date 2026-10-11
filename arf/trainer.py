@@ -7,7 +7,7 @@ scoring and to load a trained model as a ``predict_fn`` compatible with
 Requires *numpy* and *scikit-learn* — both are optional dependencies of
 the ``arf`` package.  Install them with::
 
-    pip install arf[ml]
+    pip install advanced-rag-framework[ml]
 """
 from __future__ import annotations
 
@@ -15,11 +15,13 @@ import logging
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from arf.features import FEATURE_VERSION
+
 logger = logging.getLogger(__name__)
 
 _SKLEARN_ERROR = (
     "scikit-learn is required for MLP training.  "
-    "Install it with:  pip install arf[ml]"
+    "Install it with:  pip install advanced-rag-framework[ml]"
 )
 
 
@@ -37,7 +39,7 @@ def _require_numpy():
         return np
     except ImportError as exc:
         raise ImportError(
-            "numpy is required for MLP training.  Install it with:  pip install arf[ml]"
+            "numpy is required for MLP training.  Install it with:  pip install advanced-rag-framework[ml]"
         ) from exc
 
 
@@ -75,7 +77,8 @@ def train_reranker(
 
     Returns:
         Dict with keys ``"metrics"`` (accuracy, precision, recall, f1,
-        auc_roc), ``"model"``, ``"scaler"``, and ``"metadata"``.
+        auc_roc), ``"model"``, ``"scaler"``, ``"feature_names"``,
+        ``"feature_version"`` and ``"metadata"``.
     """
     np = _require_numpy()
     _require_sklearn()
@@ -170,6 +173,7 @@ def train_reranker(
         "model": model,
         "scaler": scaler,
         "feature_names": feature_names,
+        "feature_version": FEATURE_VERSION,
         "metadata": metadata,
         "version": 1,
     }
@@ -189,6 +193,7 @@ def load_reranker(
     path: str,
     *,
     uncertainty_threshold: Tuple[float, float] = (0.4, 0.6),
+    strict: bool = False,
 ) -> Callable[[List[List[float]]], List[float]]:
     """Load a trained model and return a ``predict_fn``.
 
@@ -200,6 +205,9 @@ def load_reranker(
         path: Path to a joblib bundle saved by :func:`train_reranker`.
         uncertainty_threshold: Not used by the returned function but
             stored for reference.
+        strict: Raise ``ValueError`` (instead of logging a warning) when
+            the bundle was trained on a different
+            :data:`~arf.features.FEATURE_VERSION` than this ARF extracts.
 
     Returns:
         ``(feature_vectors) -> [float, ...]``
@@ -210,6 +218,17 @@ def load_reranker(
     bundle = joblib.load(path)
     model = bundle["model"]
     scaler = bundle["scaler"]
+
+    trained_version = bundle.get("feature_version", 1)
+    if trained_version != FEATURE_VERSION:
+        message = (
+            f"{path}: model was trained on feature version {trained_version}, but this ARF extracts "
+            f"version {FEATURE_VERSION}. Retrain it with the current FeatureExtractor — until then its "
+            "predictions are unreliable."
+        )
+        if strict:
+            raise ValueError(message)
+        logger.warning(message)
 
     def predict_fn(features: List[List[float]]) -> List[float]:
         X = np.asarray(features, dtype=np.float64)
