@@ -244,10 +244,40 @@ pipeline = Pipeline(
 from arf import follow_rephrase_chain
 
 result = follow_rephrase_chain("due process clause", lookup_fn=my_db_lookup, max_hops=3)
-# result.hit, result.cached_results, result.path, result.loop_detected
+# result.hit, result.cached_results, result.chain, result.loop_detected
 ```
 
 Walks a directed graph of query→rephrase edges with loop detection and early exit on cache hit. Storage-agnostic — you provide the `lookup_fn`.
+
+### Cache — what is stored, and when it is a hit
+
+```python
+cache = {}  # any store: Redis, MongoDB, SQLite, a dict ...
+
+pipeline = Pipeline(
+    ...,
+    cache_lookup=lambda key: cache.get(key),                        # → {"results": payload, "next": key} | None
+    cache_store=lambda key, payload: cache.setdefault(key, {}).update(results=payload),
+    link_fn=lambda src, dst: cache.setdefault(src, {}).update(next=dst),   # optional rephrase edge
+    cache_ttl=24 * 3600,            # optional: seconds an entry stays valid
+    cache_version="ingest-2026-10", # optional: change it after re-ingesting to invalidate everything
+)
+```
+
+* **Keys are normalised** (lower-case, trimmed, whitespace collapsed — `cache_normalize_fn`) for
+  lookups, stores and links alike, so `"What is  due process"` and `"what is due process"` share one entry.
+* **The payload is a JSON-friendly dict** — `{"version", "cache_version", "top_k", "created_at",
+  "results": [{"item", "score", "llm_score", "summary"}, ...]}`. Store it as-is; it survives a
+  round-trip through Redis or MongoDB (tuples that come back as lists are fine).
+* **A hit is free.** Cached summaries and LLM scores are served directly; `llm_fn` and
+  `summarize_fn` are not called again.
+* **A hit must fit the request.** Expired entries (`cache_ttl`), entries written under another
+  `cache_version`, and entries stored for a smaller `top_k` than requested are misses, and the
+  rephrase walk keeps following `next` edges past them.
+* **Semantic lookup (optional).** Give `cache_nearest_fn=(embedding) → (cached_query_text, similarity)`
+  (e.g. a vector index over your cached queries) and near-duplicate queries above
+  `cache_similarity_threshold` (default 0.95) are served from the neighbour's entry. On a miss
+  the embedding is reused for the vector search, so it costs nothing extra.
 
 ### ScoreParser — LLM output parsing + multiplier blending
 
@@ -303,6 +333,7 @@ Validates documents, computes hierarchy metadata (depth, path), generates embedd
 | `keyword_fn` | Lexical / full-text search | BM25, Elasticsearch, MongoDB text index, SQL `LIKE` |
 | `alias_fn` | Alias / synonym lookup | Dict, alias table, any search |
 | `cache_lookup/store` | Cache | Redis, MongoDB, SQLite, in-memory dict |
+| `cache_nearest_fn` | Semantic cache lookup | Any vector index over cached queries |
 | `resolve_fn` | Parent lookup | Any database query |
 | `summarize_fn` | Answer generation | Any LLM |
 | `store_fn` (ingest) | Document storage | Any database write |

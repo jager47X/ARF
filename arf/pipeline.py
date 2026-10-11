@@ -16,18 +16,23 @@ No external dependencies beyond the other ``arf`` modules.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from arf.document import Document, DocumentConfig
 from arf.features import FeatureExtractor, cosine_similarity
-from arf.query_graph import follow_rephrase_chain
+from arf.query_graph import follow_rephrase_chain, normalize_query
 from arf.score_parser import extract_score, multiplier
 from arf.triage import Triage
 
 logger = logging.getLogger(__name__)
 
 Scored = Tuple[Any, float]
+
+# Bump when the shape of the dict handed to cache_store changes; entries
+# written under another version are treated as misses.
+CACHE_FORMAT_VERSION = 1
 
 
 @dataclass
@@ -36,6 +41,8 @@ class _RunContext:
 
     # dedupe key -> 0-9 score the LLM gave that candidate
     llm_scores: Dict[Any, int] = field(default_factory=dict)
+    # dedupe key -> summary served from the cache (skips summarize_fn)
+    cached_summaries: Dict[Any, str] = field(default_factory=dict)
 
 
 def _make_key_fn(config: DocumentConfig) -> Callable[[Any], Any]:
@@ -77,9 +84,18 @@ class Pipeline:
         llm_fn: ``(query, document_dict) -> str`` — raw LLM output containing
             a 0-9 relevance score (see :mod:`arf.score_parser` for accepted
             formats).  How the score is used depends on *llm_mode*.
-        cache_lookup: ``(query) -> {"results": ..., "next": ...} | None``
-        cache_store: ``(query, results) -> None``
-        link_fn: ``(source_query, target_query) -> None``
+        cache_lookup: ``(normalised_query) -> {"results": ..., "next": ...} | None``
+            — a node of the rephrase graph.  ``"results"`` is whatever an
+            earlier *cache_store* call stored for that query; ``"next"`` is
+            the normalised text of the rephrase to follow.
+        cache_store: ``(normalised_query, payload) -> None`` — *payload* is
+            a JSON-friendly dict (``version``, ``cache_version``, ``top_k``,
+            ``created_at``, ``results``) carrying the raw items, scores,
+            LLM scores and summaries.  Store it as the node's ``"results"``
+            so *cache_lookup* can hand it straight back; a hit is served
+            without calling *llm_fn* or *summarize_fn* again.
+        link_fn: ``(source_query, target_query) -> None`` — record a
+            rephrase edge (both texts already normalised).
         store_query_fn: ``(query, data_dict) -> None``
         preprocess_fn: ``(query) -> str``
         moderate_fn: ``(query) -> bool`` (True = safe)
@@ -144,8 +160,28 @@ class Pipeline:
             fetches exactly ``top_k`` (pre-0.3.0 behaviour).
         max_candidates: Hard cap on the number fetched from *search_fn*,
             whatever the multiplier says.  ``None`` means no cap.
+        cache_normalize_fn: Key normalisation applied to every cache
+            lookup, store and link (default
+            :func:`~arf.query_graph.normalize_query`: lower-case, trim,
+            collapse whitespace).
+        cache_ttl: Seconds a cached entry stays valid; ``None`` = forever.
+        cache_version: Opaque tag stored with every entry.  Change it (e.g.
+            after re-ingesting documents) to invalidate everything cached
+            under the old tag.  ``None`` disables the check.  Entries
+            written by pre-0.3.0 versions carry no metadata and are only
+            served when neither *cache_ttl* nor *cache_version* is set.
+        cache_nearest_fn: ``(embedding) -> (cached_query_text, similarity) | None``
+            — nearest previously cached query by embedding.  When the exact
+            walk misses, the pipeline embeds the query, asks for its nearest
+            cached neighbour and, if ``similarity >= cache_similarity_threshold``,
+            serves that neighbour's results (semantic cache).  The embedding
+            is reused for the vector search when it is a miss.
+        cache_similarity_threshold: Minimum similarity for a semantic hit.
 
     Note:
+        An entry is a hit only if it was stored for a ``top_k`` at least as
+        large as the one requested (it is then sliced down); an entry
+        stored for a smaller ``top_k`` is a miss.
         ``Triage.top_k`` is only used by :meth:`Triage.apply`; the pipeline
         takes ``top_k`` from :meth:`run`.
     """
@@ -198,7 +234,14 @@ class Pipeline:
         on_error: Optional[Callable[[str, Exception], None]] = None,
         candidate_multiplier: float = 3.0,
         max_candidates: Optional[int] = None,
+        cache_normalize_fn: Callable[[str], str] = normalize_query,
+        cache_ttl: Optional[float] = None,
+        cache_version: Optional[str] = None,
+        cache_nearest_fn: Optional[Callable] = None,
+        cache_similarity_threshold: float = 0.95,
     ):
+        if cache_ttl is not None and cache_ttl <= 0:
+            raise ValueError(f"cache_ttl must be > 0 seconds or None, got {cache_ttl!r}")
         if candidate_multiplier < 1.0:
             raise ValueError(f"candidate_multiplier must be >= 1.0, got {candidate_multiplier!r}")
         if max_candidates is not None and max_candidates < 1:
@@ -249,6 +292,11 @@ class Pipeline:
         self.on_error = on_error
         self.candidate_multiplier = candidate_multiplier
         self.max_candidates = max_candidates
+        self.cache_normalize_fn = cache_normalize_fn
+        self.cache_ttl = cache_ttl
+        self.cache_version = cache_version
+        self.cache_nearest_fn = cache_nearest_fn
+        self.cache_similarity_threshold = cache_similarity_threshold
 
         # Emitted at most once per instance so a mis-calibrated threshold
         # setup is visible without flooding the logs on every query.
@@ -286,23 +334,34 @@ class Pipeline:
         if self.preprocess_fn is not None:
             query = self.preprocess_fn(query)
 
-        # 3. Cache check (rephrase graph walk)
+        # 3. Cache check — exact rephrase-graph walk, then optional semantic
+        # lookup.  The walk sees stale / mismatched entries as "no results"
+        # (see _validating_lookup) so it keeps following rephrase edges.
+        embedding: Any = None
         if self.cache_lookup is not None:
+            lookup = self._validating_lookup(top_k)
             chain = follow_rephrase_chain(
                 query,
-                lookup_fn=self.cache_lookup,
+                lookup_fn=lookup,
+                normalize_fn=self.cache_normalize_fn,
                 max_hops=self.graph_max_hops,
             )
             if chain.hit:
                 logger.info("Cache hit for %r (hops=%d)", query[:60], chain.hops)
-                return self._wrap_results(chain.cached_results, query)
+                return self._results_from_cache(chain.cached_results, original_query, top_k)
             if chain.final_text != query:
                 query = chain.final_text
+            elif self.cache_nearest_fn is not None:
+                embedding = self.embed_fn(query)
+                cached = self._semantic_cache_lookup(query, embedding, lookup)
+                if cached is not None:
+                    return self._results_from_cache(cached, original_query, top_k)
 
         # 4. Search loop (with rephrase retry)
         previous_attempts: List[str] = []
         for attempt in range(self.max_rephrase + 1):
-            results = self._search_and_rank(query, top_k=top_k, ctx=ctx)
+            results = self._search_and_rank(query, top_k=top_k, ctx=ctx, embedding=embedding)
+            embedding = None  # only valid for the first query text
             if results:
                 break
 
@@ -313,10 +372,10 @@ class Pipeline:
             if not rephrased or rephrased == query:
                 break
 
-            # Link rephrase in graph
+            # Link rephrase in graph (normalised, like every other cache key)
             if self.link_fn is not None:
                 try:
-                    self.link_fn(query, rephrased)
+                    self.link_fn(self.cache_normalize_fn(query), self.cache_normalize_fn(rephrased))
                 except Exception as exc:
                     self._report_error("link_fn", exc, f"{query[:40]!r} -> {rephrased[:40]!r}")
 
@@ -326,15 +385,17 @@ class Pipeline:
         if not results:
             return []
 
-        # 5. Cache store
+        # 5. Build output with optional parent context + summaries
+        output = self._build_output(results, original_query, ctx)
+
+        # 6. Cache store — after the summaries, so a later hit is really free
         if self.cache_store is not None:
             try:
-                self.cache_store(query, results)
+                self.cache_store(self.cache_normalize_fn(query), self._cache_payload(results, output, top_k))
             except Exception as exc:
                 self._report_error("cache_store", exc, f"query={query[:60]!r}")
 
-        # 6. Build output with optional parent context + summaries
-        return self._build_output(results, original_query, ctx)
+        return output
 
     def fetch_k(self, top_k: int) -> int:
         """Number of candidates requested from *search_fn* for a given ``top_k``."""
@@ -347,11 +408,18 @@ class Pipeline:
     # Internal
     # ------------------------------------------------------------------
 
-    def _search_and_rank(self, query: str, *, top_k: int, ctx: Optional[_RunContext] = None) -> List[Scored]:
-        """Embed → search → keyword merge → triage → MLP → LLM verify."""
+    def _search_and_rank(
+        self, query: str, *, top_k: int, ctx: Optional[_RunContext] = None, embedding: Any = None
+    ) -> List[Scored]:
+        """Embed → search → keyword merge → triage → MLP → LLM verify.
+
+        *embedding* may be passed in when the caller already embedded this
+        exact query text (e.g. for the semantic cache lookup).
+        """
         ctx = ctx if ctx is not None else _RunContext()
         # Embed
-        embedding = self.embed_fn(query)
+        if embedding is None:
+            embedding = self.embed_fn(query)
 
         # Store query embedding
         if self.store_query_fn is not None:
@@ -580,6 +648,7 @@ class Pipeline:
     ) -> List[Dict[str, Any]]:
         """Convert scored tuples to rich output dicts."""
         llm_scores = ctx.llm_scores if ctx is not None else {}
+        cached_summaries = ctx.cached_summaries if ctx is not None else {}
         output: List[Dict[str, Any]] = []
         for item, score in results:
             doc = Document.from_dict(item, self.doc_config) if isinstance(item, dict) else item
@@ -596,8 +665,11 @@ class Pipeline:
             else:
                 entry["context"] = []
 
-            # Generate summary
-            if self.summarize_fn is not None and isinstance(doc, Document):
+            # Summary — reuse a cached one so a cache hit never re-runs the LLM
+            cached_summary = cached_summaries.get(self._key_fn(item))
+            if cached_summary:
+                entry["summary"] = cached_summary
+            elif self.summarize_fn is not None and isinstance(doc, Document):
                 try:
                     entry["summary"] = self.summarize_fn(query, doc, entry["context"])
                 except Exception as exc:
@@ -629,15 +701,111 @@ class Pipeline:
         ancestors.reverse()
         return ancestors
 
-    def _wrap_results(self, cached: list, query: str) -> List[Dict[str, Any]]:
-        """Wrap raw cached results as output dicts."""
-        results: List[Scored] = []
-        for item in cached:
-            if isinstance(item, tuple) and len(item) == 2:
-                results.append(item)
+    # ------------------------------------------------------------------
+    # Cache helpers
+    # ------------------------------------------------------------------
+
+    def _validating_lookup(self, top_k: int) -> Callable[[str], Optional[dict]]:
+        """Wrap *cache_lookup* so stale or mismatched entries read as "no results".
+
+        The rephrase walk then keeps following ``"next"`` edges instead of
+        serving an expired entry.  A failing cache backend is reported and
+        treated as a miss rather than taking the query down.
+        """
+
+        def lookup(norm_text: str) -> Optional[dict]:
+            try:
+                node = self.cache_lookup(norm_text)
+            except Exception as exc:
+                self._report_error("cache_lookup", exc, f"key={norm_text[:60]!r}")
+                return None
+            if node and node.get("results") and not self._cache_entry_valid(node["results"], top_k):
+                node = {**node, "results": None}
+            return node
+
+        return lookup
+
+    def _cache_entry_valid(self, cached: Any, top_k: int) -> bool:
+        if isinstance(cached, dict) and "results" in cached:
+            if cached.get("version") != CACHE_FORMAT_VERSION:
+                return False
+            if self.cache_version is not None and cached.get("cache_version") != self.cache_version:
+                return False
+            if self.cache_ttl is not None:
+                created = cached.get("created_at")
+                if created is None or time.time() - float(created) > self.cache_ttl:
+                    return False
+            stored_top_k = cached.get("top_k")
+            if stored_top_k is not None and int(stored_top_k) < top_k:
+                return False
+            return True
+        # Legacy bare list (pre-0.3.0): no metadata, so it cannot satisfy a TTL or version check.
+        return self.cache_ttl is None and self.cache_version is None
+
+    def _semantic_cache_lookup(self, query: str, embedding: Any, lookup: Callable[[str], Optional[dict]]) -> Any:
+        """Serve the nearest cached query's results if it is similar enough."""
+        try:
+            nearest = self.cache_nearest_fn(embedding)
+        except Exception as exc:
+            self._report_error("cache_nearest_fn", exc, f"query={query[:60]!r}")
+            return None
+        if not nearest:
+            return None
+        text, similarity = nearest
+        if similarity < self.cache_similarity_threshold or self.cache_normalize_fn(text) == self.cache_normalize_fn(query):
+            return None
+        chain = follow_rephrase_chain(
+            text, lookup_fn=lookup, normalize_fn=self.cache_normalize_fn, max_hops=self.graph_max_hops
+        )
+        if chain.hit:
+            logger.info("Semantic cache hit for %r via %r (similarity=%.3f)", query[:60], text[:60], similarity)
+            return chain.cached_results
+        return None
+
+    def _cache_payload(self, results: List[Scored], output: List[Dict[str, Any]], top_k: int) -> Dict[str, Any]:
+        """JSON-friendly entry: raw items + scores + what the LLM already produced."""
+        entries = [
+            {
+                "item": item,
+                "score": float(score),
+                "llm_score": entry.get("llm_score"),
+                "summary": entry.get("summary") or "",
+            }
+            for (item, score), entry in zip(results, output)
+        ]
+        return {
+            "version": CACHE_FORMAT_VERSION,
+            "cache_version": self.cache_version,
+            "top_k": top_k,
+            "created_at": time.time(),
+            "results": entries,
+        }
+
+    @staticmethod
+    def _cache_entries(cached: Any) -> List[Dict[str, Any]]:
+        """Normalise the stored shapes (payload dict, legacy tuples, JSON lists) to entry dicts."""
+        if isinstance(cached, dict) and "results" in cached:
+            return [e for e in (cached["results"] or []) if isinstance(e, dict) and "item" in e]
+        entries: List[Dict[str, Any]] = []
+        for item in cached or []:
+            if isinstance(item, (tuple, list)) and len(item) == 2:
+                entries.append({"item": item[0], "score": float(item[1])})
             elif isinstance(item, dict):
-                score = float(item.get("score", 1.0))
-                results.append((item, score))
+                entries.append({"item": item, "score": float(item.get("score", 1.0))})
             else:
-                results.append((item, 1.0))
-        return self._build_output(results, query)
+                entries.append({"item": item, "score": 1.0})
+        return entries
+
+    def _results_from_cache(self, cached: Any, query: str, top_k: int) -> List[Dict[str, Any]]:
+        """Build output dicts from a cache entry without re-running any LLM stage."""
+        ctx = _RunContext()
+        results: List[Scored] = []
+        for entry in self._cache_entries(cached)[:top_k]:
+            item = entry["item"]
+            results.append((item, float(entry.get("score", 1.0))))
+            key = self._key_fn(item)
+            if entry.get("llm_score") is not None:
+                ctx.llm_scores[key] = int(entry["llm_score"])
+            if entry.get("summary"):
+                ctx.cached_summaries[key] = entry["summary"]
+        return self._build_output(results, query, ctx)

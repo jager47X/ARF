@@ -11,10 +11,22 @@ SQLite, in-memory dict, etc.).
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, List, Optional
 
 logger = logging.getLogger(__name__)
+
+_WS_RE = re.compile(r"\s+")
+
+
+def normalize_query(text: str) -> str:
+    """Default cache-key normalisation: lower-case, trim, collapse whitespace.
+
+    :class:`~arf.pipeline.Pipeline` applies it to every cache lookup, store
+    and link so the three can never disagree on the key.
+    """
+    return _WS_RE.sub(" ", str(text or "")).strip().lower()
 
 
 @dataclass
