@@ -150,6 +150,23 @@ result = triage.classify(candidates)
 # result.accepted, result.needs_review, result.rejected
 ```
 
+| Threshold | Meaning |
+|-----------|---------|
+| `min_score` | Below this → rejected outright |
+| `accept_threshold` | At or above this → accepted without further checks |
+| `verify_threshold` | Between this and `accept_threshold` → "needs review" (MLP → LLM) |
+| `gap` | Candidates more than this far below the top result are dropped |
+
+**Calibrate the thresholds to your embedding model.** The defaults above assume cosine
+similarities where a strong match scores ≳0.85. Many models (e.g. OpenAI `text-embedding-3-*`)
+score relevant documents in the 0.3–0.6 range; with those, keep the *ordering* of the thresholds
+but shift them down (the sample project uses `0.30 / 0.60 / 0.40`). If every candidate is
+rejected, the pipeline logs a one-time warning with the top observed score to help you re-tune.
+
+**No reviewer configured?** When neither `predict_fn` nor `llm_fn` is provided (or the MLP is
+uncertain and there is no `llm_fn`), "needs review" candidates are returned at their retrieval
+score instead of being discarded. Pass `Pipeline(..., unreviewed_policy="drop")` to discard them.
+
 ### QueryGraph — rephrase chain walk
 
 ```python
