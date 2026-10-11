@@ -8,7 +8,6 @@ import pytest
 
 from rag_dependencies.mlp_reranker import MLPReranker
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -70,8 +69,9 @@ class TestMLPRerankerTrain:
     def test_train_with_custom_hyperparams(self, synthetic_data):
         X, y, names = synthetic_data
         reranker = MLPReranker()
-        metrics = reranker.train(
-            X, y,
+        reranker.train(
+            X,
+            y,
             feature_names=names,
             hidden_layer_sizes=(32, 16),
             alpha=1e-3,
@@ -172,6 +172,7 @@ class TestMLPRerankerSaveLoad:
 class TestOptimizeHyperparameters:
     def test_returns_best_params(self, synthetic_data):
         import sys
+
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "benchmarks"))
         from train_reranker import optimize_hyperparameters
 
@@ -190,6 +191,7 @@ class TestOptimizeHyperparameters:
 
     def test_different_scoring_metrics(self, synthetic_data):
         import sys
+
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "benchmarks"))
         from train_reranker import optimize_hyperparameters
 
@@ -208,12 +210,12 @@ class TestOptimizeHyperparameters:
 class TestOptimizeThresholds:
     def test_returns_per_domain_thresholds(self, synthetic_data):
         import sys
+
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "benchmarks"))
         from train_reranker import optimize_thresholds
 
         X, y, _ = synthetic_data
         # Create domain labels
-        rng = np.random.RandomState(42)
         domains = np.array(["domain_a"] * 100 + ["domain_b"] * 100)
 
         # Train a model to get model + scaler
@@ -234,6 +236,7 @@ class TestOptimizeThresholds:
 
     def test_skips_small_domains(self, synthetic_data):
         import sys
+
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "benchmarks"))
         from train_reranker import optimize_thresholds
 
@@ -267,9 +270,14 @@ class TestConfigSchemaMLP:
 
         # Minimal valid thresholds + MLP string field
         t = DomainThresholds(
-            query_search=0.5, alias_search=0.5, RAG_SEARCH_min=0.3,
-            LLM_VERIFication=0.4, RAG_SEARCH=0.7, confident=0.8,
-            FILTER_GAP=0.1, LLM_SCORE=0.5,
+            query_search=0.5,
+            alias_search=0.5,
+            RAG_SEARCH_min=0.3,
+            LLM_VERIFication=0.4,
+            RAG_SEARCH=0.7,
+            confident=0.8,
+            FILTER_GAP=0.1,
+            LLM_SCORE=0.5,
             mlp_hidden_layer_sizes="128,64,32",
             mlp_activation="relu",
         )

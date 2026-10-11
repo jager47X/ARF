@@ -5,6 +5,34 @@ All notable changes to ARF will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - Unreleased
+
+### Changed
+- **Unreviewed candidates are kept** — when no `predict_fn`/`llm_fn` is configured (or the MLP is
+  uncertain and there is no `llm_fn`), "needs review" candidates are returned at their retrieval
+  score instead of being silently dropped. The previous behaviour is available with
+  `Pipeline(unreviewed_policy="drop")` (`arf/pipeline.py`)
+
+### Added
+- **Threshold-calibration warning** — the pipeline logs a one-time warning (with the top observed
+  score) when triage rejects every candidate, which usually means the thresholds don't match the
+  embedding model's score range (`arf/pipeline.py`)
+- README: threshold table and "calibrate to your embedding model" guidance
+
+## [0.2.2] - 2026-04-06
+
+### Added
+- MLP hyperparameter optimization (`alpha`, `learning_rate_init`, `activation`) and threshold tuning
+  (`arf/trainer.py`, `benchmarks/train_reranker.py`, `config_schema.py`)
+
+## [0.2.1] - 2026-04-04
+
+### Added
+- `arf` pip-installable library package with a zero-dependency core (`arf/`)
+- `sample-project/`: cooking-recipe search with FAISS, Voyage AI and OpenAI
+- GitHub Actions workflow publishing to PyPI on release (`.github/workflows/publish.yml`)
+- README rewritten for the library package
+
 ## [0.1.0] - 2026-03-16
 
 ### Added

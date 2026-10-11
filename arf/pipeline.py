@@ -57,7 +57,14 @@ class Pipeline:
         parser_range: ``(min_mult, max_mult)`` for score blending.
         predict_zones: ``(low, high)`` probability zones for MLP triage.
         max_rephrase: Number of rephrase-and-retry attempts.
+        unreviewed_policy: What to do with candidates in the "needs review"
+            band when no reviewer is left to resolve them (no *predict_fn*
+            / *llm_fn*, or the MLP was uncertain and there is no *llm_fn*).
+            ``"keep"`` (default) returns them at their retrieval score;
+            ``"drop"`` discards them (pre-0.3.0 behaviour).
     """
+
+    _UNREVIEWED_POLICIES = ("keep", "drop")
 
     def __init__(
         self,
@@ -91,7 +98,11 @@ class Pipeline:
         parser_range: Tuple[float, float] = (0.50, 1.50),
         predict_zones: Tuple[float, float] = (0.4, 0.6),
         max_rephrase: int = 2,
+        unreviewed_policy: str = "keep",
     ):
+        if unreviewed_policy not in self._UNREVIEWED_POLICIES:
+            raise ValueError(f"unreviewed_policy must be one of {self._UNREVIEWED_POLICIES}, got {unreviewed_policy!r}")
+
         self.doc_config = doc_config or DocumentConfig()
         self.triage = triage or Triage()
         self.features = FeatureExtractor(self.doc_config)
@@ -115,6 +126,11 @@ class Pipeline:
         self.parser_min, self.parser_max = parser_range
         self.predict_zones = predict_zones
         self.max_rephrase = max_rephrase
+        self.unreviewed_policy = unreviewed_policy
+
+        # Emitted at most once per instance so a mis-calibrated threshold
+        # setup is visible without flooding the logs on every query.
+        self._warned_all_rejected = False
 
     # ------------------------------------------------------------------
     # Public API
@@ -224,6 +240,8 @@ class Pipeline:
 
         # Triage — split into accept / needs_review / reject
         result = self.triage.classify(candidates)
+        if not result.accepted and not result.needs_review:
+            self._warn_all_rejected(candidates)
 
         # MLP scoring on needs_review candidates
         mlp_accepted: List[Scored] = []
@@ -236,17 +254,44 @@ class Pipeline:
 
         # LLM verification on uncertain candidates
         llm_verified: List[Scored] = []
+        unreviewed: List[Scored] = []
         if self.llm_fn is not None and mlp_uncertain:
             llm_verified = self._llm_verify(query, mlp_uncertain)
+        elif mlp_uncertain and self.unreviewed_policy == "keep":
+            # Nothing left to review these — keep them at their retrieval
+            # score rather than silently discarding the whole grey zone.
+            unreviewed = mlp_uncertain
+            logger.debug("Keeping %d unreviewed candidate(s) (no reviewer configured)", len(unreviewed))
 
         # Merge all accepted
-        merged = self.triage.dedupe(result.accepted, mlp_accepted, llm_verified)
+        merged = self.triage.dedupe(result.accepted, mlp_accepted, llm_verified, unreviewed)
 
         # Gap filter
         if merged:
             merged = self.triage.gap_filter(merged)
 
         return merged[: top_k]
+
+    def _warn_all_rejected(self, candidates: List[Scored]) -> None:
+        """Warn (once) when search returned candidates but triage rejected them all.
+
+        This almost always means the thresholds were tuned for a different
+        embedding model — e.g. many models produce cosine similarities in
+        the 0.3–0.6 range, well below the 0.65 default ``min_score``.
+        """
+        if self._warned_all_rejected:
+            return
+        self._warned_all_rejected = True
+        top = max(float(score) for _item, score in candidates)
+        logger.warning(
+            "Triage rejected all %d candidates (top score %.3f; min_score=%.2f, "
+            "verify_threshold=%.2f). If your embedding model yields lower "
+            "similarities, lower the Triage thresholds to match its score range.",
+            len(candidates),
+            top,
+            self.triage.min_score,
+            self.triage.verify_threshold,
+        )
 
     def _mlp_triage(
         self, query: str, candidates: List[Scored], query_embedding: Any
