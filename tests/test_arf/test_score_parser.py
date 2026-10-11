@@ -37,6 +37,42 @@ class TestExtractScore:
         with pytest.raises(ValueError):
             extract_score("This text has no score at all.")
 
+    # -- formats real LLMs actually produce ---------------------------------
+
+    @pytest.mark.parametrize(
+        "text, expected",
+        [
+            ("Reasoning: directly on point.\nScore: 8 (high)", 8),
+            ("**Score:** 7", 7),
+            ("Score = 7.5", 8),  # half-up rounding
+            ("Score: 7/10", 6),  # 7/10 * 9 = 6.3 → rescaled to the 0-9 scale
+            ("Score: 10/10", 9),
+            ("Score: 8/9", 8),
+            ("Final Score: 4", 4),
+            ("Score: 3\nActually, on reflection...\nScore: 6", 6),  # last line is the final answer
+            ('```json\n{"score": 6, "reason": "partial"}\n```', 6),
+            ("```\n5\n```", 5),
+            ('Here is my assessment: {"relevance": 4, "why": "tangential"} — hope that helps.', 4),
+            ('{"score": "8/10"}', 7),  # 8/10 * 9 = 7.2
+            ("8/10", 7),
+            ("The document is clearly related, so the score is 7.", 7),
+            ("Rating: 2 out of 9", 2),
+            ("relevance = 9", 9),
+            ("Ｓｃｏｒｅ： ８", 8),  # full-width characters are NFKC-normalised
+        ],
+    )
+    def test_messy_formats(self, text, expected):
+        assert extract_score(text) == expected
+
+    @pytest.mark.parametrize("text", ["true", "false", '{"score": true}', "", None, "scale of 0-9"])
+    def test_rejects_non_scores(self, text):
+        with pytest.raises(ValueError):
+            extract_score(text)
+
+    def test_embedded_json_does_not_mistake_key_for_score_line(self):
+        # A `"score": 7,` line inside a JSON block is not an anchored "Score:" line.
+        assert extract_score('{\n  "reason": "x",\n  "score": 7\n}') == 7
+
 
 class TestMultiplier:
     def test_zero(self):
@@ -90,3 +126,7 @@ class TestAdjustScores:
         outputs = ["unparseable"]
         results = adjust_scores(candidates, outputs)
         assert results[0][1] == 0.50  # kept original
+
+    def test_length_mismatch_raises(self):
+        with pytest.raises(ValueError, match="differ in length"):
+            adjust_scores([({"title": "doc1"}, 0.5), ({"title": "doc2"}, 0.6)], ["Score: 8"])

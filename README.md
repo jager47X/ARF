@@ -216,6 +216,7 @@ pipeline = Pipeline(
     ...,
     llm_fn=my_llm_verify,   # (query, doc_dict) → text containing a 0-9 score, e.g. "Score: 7"
     llm_pass_score=6,       # default
+    llm_workers=4,          # verify uncertain candidates concurrently (threads; default 1)
 )
 results = pipeline.run("...")
 results[0]["llm_score"]     # 0-9, or None if the candidate never reached the LLM
@@ -291,13 +292,17 @@ pipeline = Pipeline(
 ```python
 from arf import extract_score, multiplier, adjust_score
 
-extract_score('{"score": 7}')           # → 7
-extract_score("Score: 8")               # → 8
-multiplier(8)                           # → 1.39
-adjust_score(0.72, "Score: 8")          # → min(0.72 * 1.39, 1.0)
+extract_score('{"score": 7}')                        # → 7
+extract_score("Reasoning: on point.\nScore: 8 (high)")  # → 8
+extract_score("**Score:** 7/10")                      # → 6   (other scales are rescaled to 0-9)
+extract_score('```json\n{"score": 6}\n```')            # → 6   (code fences, embedded JSON, "score is N" ...)
+multiplier(8)                                         # → 1.39
+adjust_score(0.72, "Score: 8")                        # → min(0.72 * 1.39, 1.0)
 ```
 
-Parses messy LLM output (JSON, bare numbers, "Score: N" lines) into a 0-9 score, converts to a multiplier, and blends with the retrieval score.
+Parses messy LLM output into a 0-9 score (booleans are rejected, fractions like `7/10` are
+rescaled, the last `Score:` line wins), converts it to a multiplier, and blends it with the
+retrieval score.
 
 ### Trainer — MLP training
 

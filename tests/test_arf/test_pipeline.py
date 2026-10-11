@@ -1,6 +1,7 @@
 """Tests for arf.pipeline — Pipeline end-to-end with mocks."""
 
 import logging
+import threading
 
 import pytest
 
@@ -360,6 +361,54 @@ def test_gap_filter_uses_retrieval_scores_even_when_blending():
     # With the default-sized gap both survive and B still reports its blended score.
     results = make(0.20).run("q")
     assert {r["document"].id: r["score"] for r in results} == {"A": 0.86, "B": 1.0}
+
+
+def _four_uncertain_docs(embedding, top_k):
+    # All four land in the 0.70–0.85 review band, so all four reach the LLM.
+    return [({"_id": str(i), "title": f"Doc {i}", "text": "..."}, 0.80 - i * 0.01) for i in range(4)]
+
+
+def test_llm_verification_runs_in_parallel_and_preserves_order():
+    # Every llm_fn call waits at a barrier that only opens once all four calls
+    # are in flight — impossible with sequential calls, so passing proves
+    # concurrency.  Scores are derived from the id to check ordering.
+    barrier = threading.Barrier(4, timeout=2)
+
+    def llm_fn(query, item):
+        barrier.wait()
+        return f"Score: {9 - int(item['_id'])}"
+
+    pipeline = Pipeline(
+        search_fn=_four_uncertain_docs, embed_fn=_mock_embed, llm_fn=llm_fn, llm_workers=4, llm_error_policy="drop"
+    )
+    results = pipeline.run("q")
+    assert [r["document"].id for r in results] == ["0", "1", "2", "3"]
+    assert [r["llm_score"] for r in results] == [9, 8, 7, 6]
+
+
+def test_llm_verification_is_sequential_by_default():
+    barrier = threading.Barrier(2, timeout=0.2)
+    errors = []
+
+    def llm_fn(query, item):
+        barrier.wait()  # never satisfied sequentially → BrokenBarrierError per call
+        return "Score: 9"
+
+    pipeline = Pipeline(
+        search_fn=_four_uncertain_docs,
+        embed_fn=_mock_embed,
+        llm_fn=llm_fn,
+        on_error=lambda stage, exc: errors.append((stage, type(exc).__name__)),
+    )
+    results = pipeline.run("q")
+    assert len(results) == 4  # default error policy keeps them
+    assert all(r["llm_score"] is None for r in results)
+    assert errors == [("llm_fn", "BrokenBarrierError")] * 4  # reported from the calling thread, in order
+
+
+def test_invalid_llm_workers_raises():
+    with pytest.raises(ValueError, match="llm_workers"):
+        Pipeline(search_fn=_mock_search, embed_fn=_mock_embed, llm_workers=0)
 
 
 def test_invalid_llm_mode_and_pass_score_raise():
