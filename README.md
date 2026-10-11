@@ -72,6 +72,10 @@ pipeline = Pipeline(
     predict_fn=load_reranker("model.joblib"),  # trained MLP
     llm_fn=my_llm_verify,         # any LLM
 
+    # Matching (optional)
+    keyword_fn=my_keyword_search,  # (query) → [(dict, score)]  lexical hits
+    alias_fn=my_alias_lookup,      # (query) → [(alias, title)]  synonym hits
+
     # Cache (optional)
     cache_lookup=my_cache_get,     # any cache backend
     cache_store=my_cache_set,
@@ -252,6 +256,7 @@ Validates documents, computes hierarchy metadata (depth, path), generates embedd
 | `predict_fn` | ML model | scikit-learn, XGBoost, PyTorch, any callable |
 | `llm_fn` | LLM verification | OpenAI, Anthropic, Ollama, Llama.cpp, any API |
 | `keyword_fn` | Lexical / full-text search | BM25, Elasticsearch, MongoDB text index, SQL `LIKE` |
+| `alias_fn` | Alias / synonym lookup | Dict, alias table, any search |
 | `cache_lookup/store` | Cache | Redis, MongoDB, SQLite, in-memory dict |
 | `resolve_fn` | Parent lookup | Any database query |
 | `summarize_fn` | Answer generation | Any LLM |

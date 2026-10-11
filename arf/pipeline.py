@@ -51,7 +51,11 @@ class Pipeline:
         moderate_fn: ``(query) -> bool`` (True = safe)
         rephrase_fn: ``(query, previous_attempts) -> str | None``
         keyword_fn: ``(query) -> [(dict, float), ...]`` — lexical / keyword
-            hits.  Their raw scores are only used in ``keyword_mode="max"``.
+            hits.  Their raw scores are only used in ``keyword_mode="max"``;
+            the hit titles also feed the MLP's ``keyword_match`` feature.
+        alias_fn: ``(query) -> [(alias, title), ...]`` — alias / synonym
+            hits, fed to the MLP's ``alias_match`` and ``match_type``
+            features.  Plain title strings are accepted too.
         resolve_fn: ``(parent_id) -> dict | None``
         summarize_fn: ``(query, Document, context_list) -> str``
         graph_max_hops: Max rephrase chain depth.
@@ -104,6 +108,7 @@ class Pipeline:
         rephrase_fn: Optional[Callable] = None,
         # Optional matching
         keyword_fn: Optional[Callable] = None,
+        alias_fn: Optional[Callable] = None,
         # Optional hierarchy
         resolve_fn: Optional[Callable] = None,
         # Optional answer
@@ -139,6 +144,7 @@ class Pipeline:
         self.moderate_fn = moderate_fn
         self.rephrase_fn = rephrase_fn
         self.keyword_fn = keyword_fn
+        self.alias_fn = alias_fn
         self.resolve_fn = resolve_fn
         self.summarize_fn = summarize_fn
 
@@ -256,10 +262,20 @@ class Pipeline:
             return []
 
         # Keyword merge
+        keyword_matches: List[str] = []
         if self.keyword_fn is not None:
             kw_results = self.keyword_fn(query) or []
             if kw_results:
                 candidates = self._merge_keyword_hits(candidates, kw_results, embedding)
+                keyword_matches = [t for t in (self._title_of(item) for item, _ in kw_results) if t]
+
+        # Alias matches (features only)
+        alias_matches: List[Any] = []
+        if self.alias_fn is not None:
+            try:
+                alias_matches = list(self.alias_fn(query) or [])
+            except Exception as exc:
+                logger.warning("alias_fn failed for %r: %s", query[:60], exc)
 
         # Triage — split into accept / needs_review / reject
         result = self.triage.classify(candidates)
@@ -272,7 +288,12 @@ class Pipeline:
 
         if self.predict_fn is not None and result.needs_review:
             mlp_accepted, mlp_uncertain = self._mlp_triage(
-                query, result.needs_review, embedding
+                query,
+                result.needs_review,
+                embedding,
+                top_score=max(float(score) for _item, score in candidates),
+                keyword_matches=keyword_matches,
+                alias_matches=alias_matches,
             )
 
         # LLM verification on uncertain candidates
@@ -329,6 +350,11 @@ class Pipeline:
             return item.get(self.doc_config.embedding_field)
         return getattr(item, "embedding", None)
 
+    def _title_of(self, item: Any) -> str:
+        if isinstance(item, dict):
+            return str(item.get(self.doc_config.title_field) or "")
+        return str(getattr(item, "title", "") or "")
+
     def _warn_all_rejected(self, candidates: List[Scored]) -> None:
         """Warn (once) when search returned candidates but triage rejected them all.
 
@@ -351,14 +377,29 @@ class Pipeline:
         )
 
     def _mlp_triage(
-        self, query: str, candidates: List[Scored], query_embedding: Any
+        self,
+        query: str,
+        candidates: List[Scored],
+        query_embedding: Any,
+        *,
+        top_score: Optional[float] = None,
+        keyword_matches: Optional[List[str]] = None,
+        alias_matches: Optional[List[Any]] = None,
     ) -> Tuple[List[Scored], List[Scored]]:
-        """Run MLP on candidates, return (accepted, uncertain)."""
+        """Run MLP on candidates, return (accepted, uncertain).
+
+        The same signals used at training time (keyword / alias hits and the
+        gap to the query's *overall* top candidate) are passed through so
+        the model sees the feature distribution it was trained on.
+        """
         try:
             features = self.features.extract_batch(
                 query=query,
                 results=candidates,
                 query_embedding=query_embedding,
+                keyword_matches=keyword_matches,
+                alias_matches=alias_matches,
+                top_score=top_score,
             )
             vectors = [self.features.to_vector(f) for f in features]
             probs = self.predict_fn(vectors)
