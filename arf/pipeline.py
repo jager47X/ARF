@@ -111,7 +111,13 @@ class Pipeline:
         store_query_fn: ``(query, data_dict) -> None``
         preprocess_fn: ``(query) -> str``
         moderate_fn: ``(query) -> bool`` (True = safe)
-        rephrase_fn: ``(query, previous_attempts) -> str | None``
+        expand_fn: ``(query) -> [str, ...]`` — alternative phrasings to
+            search *in addition to* the query (multi-query retrieval): LLM
+            paraphrases, a hypothetical answer (HyDE), translations, synonym
+            rewrites ...  Each variant is embedded and searched; a document
+            keeps its best score across all of them.  See *max_expansions*.
+        rephrase_fn: ``(query, previous_attempts) -> str | None`` — a
+            replacement query, tried only when a search returns nothing.
         keyword_fn: ``(query) -> [(dict, float), ...]`` — lexical / keyword
             hits.  Their raw scores are only used in ``keyword_mode="max"``;
             the hit titles also feed the MLP's ``keyword_match`` feature.
@@ -128,6 +134,8 @@ class Pipeline:
             at or above *high* → accepted at the retrieval score, below
             *low* → rejected, between → on to the LLM.
         max_rephrase: Number of rephrase-and-retry attempts.
+        max_expansions: Most *expand_fn* variants searched per query
+            (default 3); blank and duplicate variants are skipped first.
         unreviewed_policy: What to do with candidates in the "needs review"
             band when no reviewer is left to resolve them (no *predict_fn*
             / *llm_fn*, or the MLP was uncertain and there is no *llm_fn*).
@@ -233,6 +241,7 @@ class Pipeline:
         # Optional preprocessing
         preprocess_fn: Optional[Callable] = None,
         moderate_fn: Optional[Callable] = None,
+        expand_fn: Optional[Callable] = None,
         rephrase_fn: Optional[Callable] = None,
         # Optional matching
         keyword_fn: Optional[Callable] = None,
@@ -247,6 +256,7 @@ class Pipeline:
         predict_zones: Tuple[float, float] = (0.4, 0.6),
         rerank_zones: Tuple[float, float] = (0.4, 0.6),
         max_rephrase: int = 2,
+        max_expansions: int = 3,
         unreviewed_policy: str = "keep",
         keyword_mode: str = "rescore",
         keyword_floor: Optional[float] = None,
@@ -270,6 +280,8 @@ class Pipeline:
             raise ValueError(f"candidate_multiplier must be >= 1.0, got {candidate_multiplier!r}")
         if max_candidates is not None and max_candidates < 1:
             raise ValueError(f"max_candidates must be >= 1 or None, got {max_candidates!r}")
+        if max_expansions < 0:
+            raise ValueError(f"max_expansions must be >= 0, got {max_expansions!r}")
         if llm_error_policy not in self._LLM_ERROR_POLICIES:
             raise ValueError(f"llm_error_policy must be one of {self._LLM_ERROR_POLICIES}, got {llm_error_policy!r}")
         if unreviewed_policy not in self._UNREVIEWED_POLICIES:
@@ -299,6 +311,7 @@ class Pipeline:
         self.store_query_fn = store_query_fn
         self.preprocess_fn = preprocess_fn
         self.moderate_fn = moderate_fn
+        self.expand_fn = expand_fn
         self.rephrase_fn = rephrase_fn
         self.keyword_fn = keyword_fn
         self.alias_fn = alias_fn
@@ -310,6 +323,7 @@ class Pipeline:
         self.predict_zones = predict_zones
         self.rerank_zones = rerank_zones
         self.max_rephrase = max_rephrase
+        self.max_expansions = max_expansions
         self.unreviewed_policy = unreviewed_policy
         self.keyword_mode = keyword_mode
         self.keyword_floor = keyword_floor
@@ -461,7 +475,13 @@ class Pipeline:
 
         # Search — fetch a pool larger than top_k so the later stages have
         # something to re-rank; the final list is sliced back to top_k.
-        candidates: List[Scored] = self.search_fn(embedding, self.fetch_k(top_k)) or []
+        fetch_k = self.fetch_k(top_k)
+        candidates: List[Scored] = self.search_fn(embedding, fetch_k) or []
+
+        # Multi-query expansion: search each variant too, best score per doc wins
+        if self.expand_fn is not None and self.max_expansions > 0:
+            candidates = self._expand_and_search(query, candidates, fetch_k)
+
         if not candidates:
             return []
 
@@ -536,6 +556,43 @@ class Pipeline:
 
         top = max(retrieval(c) for c in merged)
         return [c for c in merged if top - retrieval(c) <= self.triage.gap]
+
+    def _expand_and_search(self, query: str, candidates: List[Scored], fetch_k: int) -> List[Scored]:
+        """Search every *expand_fn* variant and merge on the semantic scale.
+
+        All variants are embedded with the same model, so their cosine
+        scores are directly comparable and a document simply keeps the best
+        one.  A failing *expand_fn* (or a failing search for one variant)
+        is reported and skipped — expansion only ever adds candidates.
+        """
+        try:
+            variants = list(self.expand_fn(query) or [])
+        except Exception as exc:
+            self._report_error("expand_fn", exc, f"query={query[:60]!r}")
+            return candidates
+
+        seen = {self.cache_normalize_fn(query)}
+        merged = list(candidates)
+        used = 0
+        for variant in variants:
+            if used >= self.max_expansions:
+                break
+            text = str(variant or "").strip()
+            norm = self.cache_normalize_fn(text)
+            if not text or norm in seen:
+                continue
+            seen.add(norm)
+            used += 1
+            try:
+                extra = self.search_fn(self.embed_fn(text), fetch_k) or []
+            except Exception as exc:
+                self._report_error("expand_fn search", exc, f"variant={text[:60]!r}")
+                continue
+            if extra:
+                merged = self.triage.dedupe(merged, extra, key_fn=self._key_fn)
+        if used:
+            logger.debug("Expanded %r with %d variant(s) -> %d candidates", query[:40], used, len(merged))
+        return merged
 
     def _merge_keyword_hits(
         self, candidates: List[Scored], kw_results: List[Scored], query_embedding: Any

@@ -18,7 +18,7 @@ Most RAG pipelines send every candidate to an expensive LLM for reranking. ARF e
 ```
 Query
   → Cache graph walk (free — returns instantly if seen before)
-  → Vector search (your provider)
+  → Vector search (your provider; optionally multi-query via expand_fn)
   → Threshold + gap filter (free — drops obvious junk)
   → MLP triage (free, <5ms — accept/reject/uncertain)
   → Cross-encoder rerank (optional, ~ms — resolves most of the uncertain ones)
@@ -85,7 +85,8 @@ pipeline = Pipeline(
     # Preprocessing (optional)
     preprocess_fn=my_clean,        # translate, normalize, etc.
     moderate_fn=my_moderate,       # content safety
-    rephrase_fn=my_rephrase,       # retry with rephrased query
+    expand_fn=my_expand,           # (query) → [variants]  multi-query retrieval
+    rephrase_fn=my_rephrase,       # retry with rephrased query when nothing is found
 
     # Hierarchy (optional)
     resolve_fn=my_get_parent,      # walk up document tree
@@ -188,6 +189,24 @@ rejected, the pipeline logs a one-time warning with the top observed score to he
 **No reviewer configured?** When neither `predict_fn` nor `llm_fn` is provided (or the MLP is
 uncertain and there is no `llm_fn`), "needs review" candidates are returned at their retrieval
 score instead of being discarded. Pass `Pipeline(..., unreviewed_policy="drop")` to discard them.
+
+### Query expansion — `expand_fn`
+
+```python
+def expand(query: str) -> list[str]:
+    # any source of alternative phrasings: an LLM, a synonym table, translations,
+    # or a hypothetical answer (HyDE) that is embedded instead of the question
+    return llm(f"Write 3 alternative search queries for: {query}").splitlines()
+
+pipeline = Pipeline(..., expand_fn=expand, max_expansions=3)
+```
+
+Each variant is embedded and searched like the original, and a document keeps its **best** score
+across all of them (every variant uses the same embedding model, so the scores are comparable).
+Expansion runs *before* triage and only ever adds candidates: a failing `expand_fn` or a failing
+search for one variant is reported through `on_error` and skipped. `keyword_fn` still runs once,
+on the original query. This is different from `rephrase_fn`, which *replaces* the query and is
+only tried when a search comes back empty.
 
 ### Hybrid retrieval — `keyword_fn`
 
@@ -364,6 +383,7 @@ Validates documents, computes hierarchy metadata (depth, path), generates embedd
 | `predict_fn` | ML model | scikit-learn, XGBoost, PyTorch, any callable |
 | `rerank_fn` | Cross-encoder / reranker | sentence-transformers, Cohere Rerank, Voyage rerank |
 | `llm_fn` | LLM verification | OpenAI, Anthropic, Ollama, Llama.cpp, any API |
+| `expand_fn` | Query expansion | LLM paraphrases, HyDE, synonym tables, translation |
 | `keyword_fn` | Lexical / full-text search | BM25, Elasticsearch, MongoDB text index, SQL `LIKE` |
 | `alias_fn` | Alias / synonym lookup | Dict, alias table, any search |
 | `cache_lookup/store` | Cache | Redis, MongoDB, SQLite, in-memory dict |

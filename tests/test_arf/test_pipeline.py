@@ -407,6 +407,118 @@ def test_llm_verification_is_sequential_by_default():
 
 
 # ---------------------------------------------------------------------------
+# Query expansion / multi-query retrieval
+# ---------------------------------------------------------------------------
+
+
+def _expansion_fixture():
+    """A search index keyed by query text, plus recording embed/search fns."""
+    index = {
+        "due process": [
+            ({"_id": "a", "title": "A", "text": "..."}, 0.90),
+            ({"_id": "b", "title": "B", "text": "..."}, 0.72),
+        ],
+        "fair procedure": [
+            ({"_id": "b", "title": "B", "text": "..."}, 0.91),
+            ({"_id": "c", "title": "C", "text": "..."}, 0.88),
+        ],
+        "legal fairness": [({"_id": "d", "title": "D", "text": "..."}, 0.86)],
+    }
+    embedded, searched = [], []
+
+    def embed_fn(text):
+        embedded.append(text)
+        return text  # the "embedding" is the text itself, so search_fn can look it up
+
+    def search_fn(embedding, k):
+        searched.append(embedding)
+        return list(index.get(embedding, []))
+
+    return embed_fn, search_fn, embedded, searched
+
+
+def test_expansion_searches_variants_and_keeps_best_score_per_document():
+    embed_fn, search_fn, embedded, searched = _expansion_fixture()
+    pipeline = Pipeline(
+        search_fn=search_fn, embed_fn=embed_fn, expand_fn=lambda q: ["fair procedure", "legal fairness"]
+    )
+    results = pipeline.run("due process")
+    assert searched == ["due process", "fair procedure", "legal fairness"]
+    assert embedded == ["due process", "fair procedure", "legal fairness"]
+    # b: max(0.72, 0.91) = 0.91; c and d only found through variants
+    assert [(r["document"].id, r["score"]) for r in results] == [("b", 0.91), ("a", 0.90), ("c", 0.88), ("d", 0.86)]
+
+
+def test_expansion_skips_blank_and_duplicate_variants_and_caps_at_max_expansions():
+    embed_fn, search_fn, embedded, searched = _expansion_fixture()
+    pipeline = Pipeline(
+        search_fn=search_fn,
+        embed_fn=embed_fn,
+        expand_fn=lambda q: ["", "  Due  PROCESS ", "fair procedure", "fair procedure", "legal fairness"],
+        max_expansions=1,
+    )
+    pipeline.run("due process")
+    assert searched == ["due process", "fair procedure"]
+
+    off = Pipeline(search_fn=search_fn, embed_fn=embed_fn, expand_fn=lambda q: ["fair procedure"], max_expansions=0)
+    searched.clear()
+    off.run("due process")
+    assert searched == ["due process"]
+    with pytest.raises(ValueError, match="max_expansions"):
+        Pipeline(search_fn=search_fn, embed_fn=embed_fn, max_expansions=-1)
+
+
+def test_expansion_can_rescue_an_empty_original_search():
+    embed_fn, search_fn, _, _ = _expansion_fixture()
+    pipeline = Pipeline(search_fn=search_fn, embed_fn=embed_fn, expand_fn=lambda q: ["legal fairness"])
+    results = pipeline.run("nothing matches this")
+    assert [r["document"].id for r in results] == ["d"]
+
+
+def test_expansion_failures_are_reported_and_only_ever_add_candidates():
+    embed_fn, search_fn, _, _ = _expansion_fixture()
+    errors = []
+
+    def broken_expand(query):
+        raise RuntimeError("LLM down")
+
+    pipeline = Pipeline(
+        search_fn=search_fn, embed_fn=embed_fn, expand_fn=broken_expand, on_error=lambda s, e: errors.append(s)
+    )
+    assert [r["document"].id for r in pipeline.run("due process")] == ["a", "b"]
+    assert errors == ["expand_fn"]
+
+    def flaky_search(embedding, k):
+        if embedding == "fair procedure":
+            raise ConnectionError("index timeout")
+        return search_fn(embedding, k)
+
+    errors.clear()
+    pipeline = Pipeline(
+        search_fn=flaky_search,
+        embed_fn=embed_fn,
+        expand_fn=lambda q: ["fair procedure", "legal fairness"],
+        on_error=lambda s, e: errors.append(s),
+    )
+    assert [r["document"].id for r in pipeline.run("due process")] == ["a", "d", "b"]
+    assert errors == ["expand_fn search"]
+
+
+def test_keyword_fn_runs_once_on_the_original_query_only():
+    embed_fn, search_fn, _, _ = _expansion_fixture()
+    keyword_queries = []
+
+    def keyword_fn(query):
+        keyword_queries.append(query)
+        return []
+
+    Pipeline(search_fn=search_fn, embed_fn=embed_fn, expand_fn=lambda q: ["fair procedure"], keyword_fn=keyword_fn).run(
+        "due process"
+    )
+    assert keyword_queries == ["due process"]
+
+
+# ---------------------------------------------------------------------------
 # Cross-encoder rerank slot (between the MLP and the LLM)
 # ---------------------------------------------------------------------------
 
