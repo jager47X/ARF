@@ -370,6 +370,107 @@ def test_invalid_llm_mode_and_pass_score_raise():
 
 
 # ---------------------------------------------------------------------------
+# Error policy: failures stay visible and are configurable
+# ---------------------------------------------------------------------------
+
+
+def _raising_llm(query, item):
+    raise RuntimeError("LLM endpoint down")
+
+
+def test_llm_failure_keeps_candidate_by_default_and_warns(caplog):
+    pipeline = Pipeline(search_fn=_mock_search, embed_fn=_mock_embed, llm_fn=_raising_llm)
+    with caplog.at_level(logging.WARNING, logger="arf.pipeline"):
+        results = pipeline.run("q")
+    by_id = {r["document"].id: r for r in results}
+    assert set(by_id) == {"1", "2"}
+    assert by_id["2"]["score"] == 0.78
+    assert by_id["2"]["llm_score"] is None
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("llm_fn failed" in m and "LLM endpoint down" in m for m in messages)
+
+
+def test_llm_error_policy_drop():
+    pipeline = Pipeline(search_fn=_mock_search, embed_fn=_mock_embed, llm_fn=_raising_llm, llm_error_policy="drop")
+    assert [r["document"].id for r in pipeline.run("q")] == ["1"]
+
+
+def test_unparseable_llm_output_follows_error_policy(caplog):
+    def chatty_llm(query, item):
+        return "I think this one is quite relevant, honestly."
+
+    kept = Pipeline(search_fn=_mock_search, embed_fn=_mock_embed, llm_fn=chatty_llm)
+    with caplog.at_level(logging.WARNING, logger="arf.pipeline"):
+        assert [r["document"].id for r in kept.run("q")] == ["1", "2"]
+    assert any("output parsing failed" in r.getMessage() for r in caplog.records)
+
+    dropped = Pipeline(search_fn=_mock_search, embed_fn=_mock_embed, llm_fn=chatty_llm, llm_error_policy="drop")
+    assert [r["document"].id for r in dropped.run("q")] == ["1"]
+
+
+def test_on_error_hook_receives_every_swallowed_error():
+    seen = []
+
+    def failing_cache_store(query, results):
+        raise OSError("redis down")
+
+    def failing_summarize(query, doc, context):
+        raise RuntimeError("summary failed")
+
+    def failing_store_query(query, data):
+        raise OSError("mongo down")
+
+    pipeline = Pipeline(
+        search_fn=_mock_search,
+        embed_fn=_mock_embed,
+        llm_fn=_raising_llm,
+        cache_store=failing_cache_store,
+        store_query_fn=failing_store_query,
+        summarize_fn=failing_summarize,
+        on_error=lambda stage, exc: seen.append((stage, type(exc).__name__)),
+    )
+    results = pipeline.run("q")
+    assert len(results) == 2
+    assert all(r["summary"] == "" for r in results)
+    assert ("llm_fn", "RuntimeError") in seen
+    assert ("cache_store", "OSError") in seen
+    assert ("store_query_fn", "OSError") in seen
+    assert seen.count(("summarize_fn", "RuntimeError")) == 2
+
+
+def test_on_error_hook_exceptions_are_ignored():
+    def bad_hook(stage, exc):
+        raise ValueError("hook bug")
+
+    pipeline = Pipeline(search_fn=_mock_search, embed_fn=_mock_embed, llm_fn=_raising_llm, on_error=bad_hook)
+    assert len(pipeline.run("q")) == 2
+
+
+def test_predict_fn_failure_is_reported_and_falls_through(caplog):
+    def broken_predict(vectors):
+        raise ValueError("feature count mismatch")
+
+    seen = []
+    pipeline = Pipeline(
+        search_fn=_mock_search,
+        embed_fn=_mock_embed,
+        predict_fn=broken_predict,
+        llm_fn=_llm_saying({"2": 8}),
+        on_error=lambda stage, exc: seen.append(stage),
+    )
+    with caplog.at_level(logging.WARNING, logger="arf.pipeline"):
+        results = pipeline.run("q")
+    assert [r["document"].id for r in results] == ["1", "2"]  # LLM still verified doc 2
+    assert seen == ["predict_fn"]
+    assert any("predict_fn failed" in r.getMessage() for r in caplog.records)
+
+
+def test_invalid_llm_error_policy_raises():
+    with pytest.raises(ValueError, match="llm_error_policy"):
+        Pipeline(search_fn=_mock_search, embed_fn=_mock_embed, llm_error_policy="retry")
+
+
+# ---------------------------------------------------------------------------
 # MLP sees the same features it was trained on
 # ---------------------------------------------------------------------------
 

@@ -23,8 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   0.70 document become 1.0 and evict everything else through the gap filter, and demanded a higher
   LLM score from lower-ranked candidates. `Pipeline(llm_mode="blend")` restores it
 - **Gap filter always uses retrieval scores**, in both LLM modes (`arf/pipeline.py`)
+- **Swallowed errors are logged at WARNING** (they were `debug` or silent) and forwarded to the new
+  `on_error(stage, exc)` hook; `predict_fn`, `llm_fn`, `cache_store`, `store_query_fn`, `link_fn`,
+  `alias_fn` and `summarize_fn` failures no longer disappear (`arf/pipeline.py`)
 
 ### Added
+- `Pipeline(llm_error_policy="keep"|"drop", on_error=...)` — what happens to a candidate when the
+  LLM call fails or its answer has no parseable score, and an observer hook for every swallowed
+  error (`arf/pipeline.py`)
 - `DocumentConfig.embedding_field` (default `"embedding"`) — the field holding a document's stored
   embedding, used by `Document.from_dict` and keyword re-scoring (`arf/document.py`)
 - `arf.features.cosine_similarity` public helper
@@ -46,6 +52,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   honour the config (`arf/features.py`)
 - **Pipeline dedupe ignored `DocumentConfig.id_field`** — documents were keyed by `_id`/`id`/title,
   so with a custom id field two different documents sharing a title collapsed into one
+  (`arf/pipeline.py`)
+- **LLM-failure fallback could never trigger** — it kept a candidate only if its score was already
+  at or above `accept_threshold`, which no LLM-bound candidate can satisfy, so every failed or
+  unparseable LLM call silently dropped the document. Replaced by `llm_error_policy`
   (`arf/pipeline.py`)
 - **Threshold-calibration warning** — the pipeline logs a one-time warning (with the top observed
   score) when triage rejects every candidate, which usually means the thresholds don't match the

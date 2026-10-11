@@ -126,11 +126,23 @@ class Pipeline:
         llm_pass_score: Minimum 0-9 LLM score to pass in ``"gate"`` mode.
             The default 6 corresponds to "clearly related" on the usual
             calibration prompts.
+        llm_error_policy: What to do with a candidate when *llm_fn* raises
+            or returns output with no parseable score.  ``"keep"`` (default)
+            returns it at its retrieval score — it already passed the
+            threshold gates, and dropping it would disguise an outage as
+            thinner results; ``"drop"`` discards it.  Either way the failure
+            is logged at WARNING and reported to *on_error*.
+        on_error: ``(stage, exception) -> None`` — called for every error the
+            pipeline swallows (``store_query_fn``, ``link_fn``,
+            ``cache_store``, ``alias_fn``, ``predict_fn``, ``llm_fn``,
+            ``summarize_fn``), e.g. to feed a metrics counter.  Exceptions
+            raised by the hook itself are ignored.
     """
 
     _UNREVIEWED_POLICIES = ("keep", "drop")
     _KEYWORD_MODES = ("rescore", "max")
     _LLM_MODES = ("gate", "blend")
+    _LLM_ERROR_POLICIES = ("keep", "drop")
 
     def __init__(
         self,
@@ -171,7 +183,11 @@ class Pipeline:
         keyword_boost: float = 0.05,
         llm_mode: str = "gate",
         llm_pass_score: int = 6,
+        llm_error_policy: str = "keep",
+        on_error: Optional[Callable[[str, Exception], None]] = None,
     ):
+        if llm_error_policy not in self._LLM_ERROR_POLICIES:
+            raise ValueError(f"llm_error_policy must be one of {self._LLM_ERROR_POLICIES}, got {llm_error_policy!r}")
         if unreviewed_policy not in self._UNREVIEWED_POLICIES:
             raise ValueError(f"unreviewed_policy must be one of {self._UNREVIEWED_POLICIES}, got {unreviewed_policy!r}")
         if keyword_mode not in self._KEYWORD_MODES:
@@ -212,6 +228,8 @@ class Pipeline:
         self.keyword_boost = keyword_boost
         self.llm_mode = llm_mode
         self.llm_pass_score = llm_pass_score
+        self.llm_error_policy = llm_error_policy
+        self.on_error = on_error
 
         # Emitted at most once per instance so a mis-calibrated threshold
         # setup is visible without flooding the logs on every query.
@@ -280,8 +298,8 @@ class Pipeline:
             if self.link_fn is not None:
                 try:
                     self.link_fn(query, rephrased)
-                except Exception:
-                    logger.debug("link_fn failed for %r -> %r", query[:40], rephrased[:40])
+                except Exception as exc:
+                    self._report_error("link_fn", exc, f"{query[:40]!r} -> {rephrased[:40]!r}")
 
             previous_attempts.append(query)
             query = rephrased
@@ -293,8 +311,8 @@ class Pipeline:
         if self.cache_store is not None:
             try:
                 self.cache_store(query, results)
-            except Exception:
-                logger.debug("cache_store failed for %r", query[:60])
+            except Exception as exc:
+                self._report_error("cache_store", exc, f"query={query[:60]!r}")
 
         # 6. Build output with optional parent context + summaries
         return self._build_output(results, original_query, ctx)
@@ -313,8 +331,8 @@ class Pipeline:
         if self.store_query_fn is not None:
             try:
                 self.store_query_fn(query, {"embedding": embedding})
-            except Exception:
-                logger.debug("store_query_fn failed for %r", query[:60])
+            except Exception as exc:
+                self._report_error("store_query_fn", exc, f"query={query[:60]!r}")
 
         # Search
         candidates: List[Scored] = self.search_fn(embedding, top_k) or []
@@ -335,7 +353,7 @@ class Pipeline:
             try:
                 alias_matches = list(self.alias_fn(query) or [])
             except Exception as exc:
-                logger.warning("alias_fn failed for %r: %s", query[:60], exc)
+                self._report_error("alias_fn", exc, f"query={query[:60]!r}")
 
         # Triage — split into accept / needs_review / reject
         result = self.triage.classify(candidates)
@@ -476,20 +494,28 @@ class Pipeline:
             routed = self.triage.by_zones(candidates, probs, zones=self.predict_zones)
             return routed.accepted, routed.needs_review
         except Exception as exc:
-            logger.warning("MLP triage failed: %s — sending all to LLM", exc)
+            self._report_error("predict_fn", exc, f"{len(candidates)} candidate(s) sent on unscored")
             return [], candidates
 
     def _llm_verify(self, query: str, candidates: List[Scored], ctx: _RunContext) -> List[Scored]:
-        """Run LLM verification and apply *llm_mode* (gate or blend)."""
+        """Run LLM verification and apply *llm_mode* (gate or blend).
+
+        A failed call or unparseable answer is handled by *llm_error_policy*
+        (keep at retrieval score, or drop) and always reported.
+        """
         verified: List[Scored] = []
         for item, base_score in candidates:
             try:
                 raw_output = self.llm_fn(query, item)
+            except Exception as exc:
+                self._report_error("llm_fn", exc, f"query={query[:40]!r}")
+                self._apply_llm_error_policy(item, base_score, verified)
+                continue
+            try:
                 llm_score = extract_score(raw_output)
-            except Exception:
-                logger.debug("LLM verify failed for item; keeping base score %.3f", base_score)
-                if base_score >= self.triage.accept_threshold:
-                    verified.append((item, base_score))
+            except ValueError as exc:
+                self._report_error("llm_fn output parsing", exc, f"output={str(raw_output)[:60]!r}")
+                self._apply_llm_error_policy(item, base_score, verified)
                 continue
 
             ctx.llm_scores[self._key_fn(item)] = llm_score
@@ -501,6 +527,26 @@ class Pipeline:
                 if adj >= self.triage.accept_threshold:
                     verified.append((item, adj))
         return verified
+
+    def _apply_llm_error_policy(self, item: Any, base_score: float, verified: List[Scored]) -> None:
+        if self.llm_error_policy == "keep":
+            verified.append((item, base_score))
+
+    def _report_error(self, stage: str, exc: Exception, detail: str = "") -> None:
+        """Log a swallowed error at WARNING and forward it to *on_error*.
+
+        The pipeline degrades gracefully when an optional stage fails, but
+        the failure must stay visible: a dead cache or LLM endpoint should
+        show up in logs (and in metrics via *on_error*), not as silently
+        thinner results.
+        """
+        suffix = f" ({detail})" if detail else ""
+        logger.warning("%s failed%s: %s: %s", stage, suffix, type(exc).__name__, exc)
+        if self.on_error is not None:
+            try:
+                self.on_error(stage, exc)
+            except Exception as hook_exc:  # an observer must never break the query
+                logger.debug("on_error hook raised: %s", hook_exc)
 
     def _build_output(
         self, results: List[Scored], query: str, ctx: Optional[_RunContext] = None
@@ -527,7 +573,8 @@ class Pipeline:
             if self.summarize_fn is not None and isinstance(doc, Document):
                 try:
                     entry["summary"] = self.summarize_fn(query, doc, entry["context"])
-                except Exception:
+                except Exception as exc:
+                    self._report_error("summarize_fn", exc, f"doc={doc.id!r}")
                     entry["summary"] = ""
             else:
                 entry["summary"] = ""
