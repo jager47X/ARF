@@ -51,6 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `arf.CorpusStats` (`from_documents`, `idf`, `to_dict`/`from_dict`) and
   `Pipeline(corpus_stats=...)` / `FeatureExtractor(corpus_stats=...)`; `sample-project/train.py`
   writes `corpus_stats.json` and `query.py` loads it (`arf/features.py`)
+- `Pipeline(llm_workers=N)` — verify a query's uncertain candidates on a thread pool instead of one
+  call at a time; order and error reporting are unchanged (`arf/pipeline.py`)
 - Cache controls: `cache_ttl` (expiry), `cache_version` (bulk invalidation after re-ingesting),
   `cache_normalize_fn` (key normalisation, default `arf.query_graph.normalize_query`), and an
   optional semantic lookup via `cache_nearest_fn` + `cache_similarity_threshold`
@@ -84,6 +86,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A cache hit re-ran `summarize_fn`** (an LLM call per result) and ignored `top_k` — a stored
   top-5 answer was returned for a top-10 request. A failing `cache_lookup` also took the whole
   query down; it is now reported and bypassed (`arf/pipeline.py`)
+- **Score parser rejected common LLM answers** — `Score: 8 (high)`, `**Score:** 7`, `Score: 7/10`,
+  `7.5`, JSON inside ` ``` ` fences or prose, and `the score is 7` all raised `ValueError` (and
+  therefore dropped the document); `"true"` parsed as 1. All are handled now: fractions on other
+  scales are rescaled to 0-9, values round half-up, the last `Score:` line wins and booleans are
+  rejected. `adjust_scores` raises on mismatched list lengths instead of silently truncating
+  (`arf/score_parser.py`)
 - **LLM-failure fallback could never trigger** — it kept a candidate only if its score was already
   at or above `accept_threshold`, which no LLM-bound candidate can satisfy, so every failed or
   unparseable LLM call silently dropped the document. Replaced by `llm_error_policy`

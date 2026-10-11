@@ -1,8 +1,12 @@
 """Parse LLM output into numeric scores and blend with retrieval scores.
 
-Extracts a 0-9 relevance score from messy LLM text (JSON, bare numbers,
-"Score: N" lines) and converts it to a multiplicative adjustment that is
-applied to the original retrieval score.
+Extracts a 0-9 relevance score from messy LLM text and converts it to a
+multiplicative adjustment that is applied to the original retrieval score.
+
+Accepted formats (see :func:`extract_score`): JSON objects or scalars, also
+inside markdown code fences or embedded in prose; bare numbers; ``Score: N``
+lines with trailing commentary; ``N/10``-style fractions (rescaled to 0-9);
+and ``score is N`` / ``rating: N`` phrases.
 
 All functions are pure — no LLM calls, no I/O.
 """
@@ -10,22 +14,76 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import unicodedata
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-_SCORE_LINE_RX = re.compile(r"(?im)^\s*score\s*:\s*(-?\d{1,2})\s*$")
+_FENCE_RX = re.compile(r"^\s*```[a-zA-Z0-9_-]*\s*\n?(.*?)\n?\s*```\s*$", re.DOTALL)
+_BOLD_RX = re.compile(r"\*\*|__")
+_FRACTION = r"(-?\d+(?:\.\d+)?)(?:\s*/\s*(\d+(?:\.\d+)?))?"
+_BARE_RX = re.compile(rf"^\s*{_FRACTION}\s*$")
+# "Score: 8", "**Score:** 7/10", "Final score = 7.5 (strong match)"
+_SCORE_LINE_RX = re.compile(rf"(?im)^\s*(?:final\s+)?score\s*[:=]\s*{_FRACTION}\b.*$")
+# "the score is 7", "rating: 8/10", "relevance = 6" anywhere in prose
+_SCORE_ANYWHERE_RX = re.compile(rf"(?i)\b(?:score|rating|relevance)\b\s*(?:is|:|=|of)?\s*{_FRACTION}\b")
+_JSON_OBJECT_RX = re.compile(r"\{.*\}", re.DOTALL)
 _JSON_SCORE_KEYS = ("score", "rating", "relevance")
+
+
+def _clean(text: Any) -> str:
+    s = unicodedata.normalize("NFKC", str(text or "")).strip()
+    fenced = _FENCE_RX.match(s)
+    if fenced:
+        s = fenced.group(1).strip()
+    return _BOLD_RX.sub("", s)
+
+
+def _to_score(value: Any, denominator: Any = None) -> int:
+    """Round a (possibly fractional, possibly on another scale) value into 0-9."""
+    v = float(value)
+    if denominator not in (None, "", 0, 0.0) and float(denominator) != 9.0:
+        v = v / float(denominator) * 9.0
+    return max(0, min(9, int(math.floor(v + 0.5))))
+
+
+def _score_from_json(obj: Any) -> Optional[int]:
+    if isinstance(obj, bool):  # bool is an int subclass — "true" is not a score
+        return None
+    if isinstance(obj, (int, float)):
+        return _to_score(obj)
+    if isinstance(obj, dict):
+        for key in _JSON_SCORE_KEYS:
+            val = obj.get(key)
+            if isinstance(val, bool) or val is None:
+                continue
+            if isinstance(val, (int, float)):
+                return _to_score(val)
+            if isinstance(val, str):
+                m = _BARE_RX.match(val)
+                if m:
+                    return _to_score(m.group(1), m.group(2))
+    return None
 
 
 def extract_score(text: str) -> int:
     """Extract a 0-9 integer score from raw LLM output.
 
-    Supports three formats (tried in order):
-      1. JSON object with a score key: ``{"score": 7}``
-      2. Bare numeric string: ``"3"``
-      3. A line matching ``Score: N``
+    Formats are tried in order of confidence:
+
+      1. The whole text is JSON — ``{"score": 7}``, ``{"rating": "8/10"}``,
+         ``7`` — optionally wrapped in a markdown code fence.
+      2. A bare number or fraction — ``"3"``, ``"7.5"``, ``"8/10"``.
+      3. A ``Score: N`` line (``**Score:** 7``, ``Score = 8/10 (strong)`` ...);
+         the last such line wins, since it is the final answer.
+      4. A JSON object embedded in prose.
+      5. ``score is N`` / ``rating: N`` / ``relevance = N`` anywhere.
+
+    Fractions on another scale (``7/10``) are rescaled to 0-9; fractional
+    values are rounded half-up; results are clamped to [0, 9].  Booleans
+    are never treated as scores.
 
     Args:
         text: Raw string output from an LLM.
@@ -36,35 +94,45 @@ def extract_score(text: str) -> int:
     Raises:
         ValueError: If no parseable score is found.
     """
-    s = unicodedata.normalize("NFKC", str(text or "")).strip()
+    s = _clean(text)
 
-    # 1) JSON (object OR scalar)
+    # 1) The whole text is JSON (object or scalar)
     try:
-        obj = json.loads(s)
-        if isinstance(obj, (int, float)):
-            v = int(obj)
-            return max(0, min(9, v))
-        if isinstance(obj, dict):
-            for key in _JSON_SCORE_KEYS:
-                if key in obj:
-                    v = int(float(obj[key]))
-                    return max(0, min(9, v))
-    except Exception:
-        pass
+        found = _score_from_json(json.loads(s))
+    except (ValueError, TypeError):
+        found = None
+    if found is not None:
+        return found
 
-    # 2) Bare numeric string: "2"
-    if re.fullmatch(r"-?\d{1,2}", s):
-        v = int(s)
-        return max(0, min(9, v))
-
-    # 3) Anchored "Score: N" line
-    m = _SCORE_LINE_RX.search(s)
+    # 2) Bare number / fraction
+    m = _BARE_RX.match(s)
     if m:
-        v = int(m.group(1))
-        return max(0, min(9, v))
+        return _to_score(m.group(1), m.group(2))
+
+    # 3) Anchored "Score: N" lines — the last one is the final answer
+    lines = _SCORE_LINE_RX.findall(s)
+    if lines:
+        value, denominator = lines[-1]
+        return _to_score(value, denominator)
+
+    # 4) A JSON object embedded in prose
+    embedded = _JSON_OBJECT_RX.search(s)
+    if embedded:
+        try:
+            found = _score_from_json(json.loads(embedded.group(0)))
+        except (ValueError, TypeError):
+            found = None
+        if found is not None:
+            return found
+
+    # 5) "score is N" anywhere in prose — last mention wins
+    anywhere = _SCORE_ANYWHERE_RX.findall(s)
+    if anywhere:
+        value, denominator = anywhere[-1]
+        return _to_score(value, denominator)
 
     raise ValueError(
-        "No parseable score (JSON scalar/object, numeric string, or 'Score:' line) found."
+        "No parseable score found (expected JSON, a bare number, a 'Score: N' line, or 'score is N')."
     )
 
 
@@ -131,7 +199,12 @@ def adjust_scores(
     Returns:
         List of ``(item, adjusted_score)`` tuples.  If parsing fails for an
         entry the original score is kept.
+
+    Raises:
+        ValueError: If the two lists differ in length.
     """
+    if len(candidates) != len(llm_outputs):
+        raise ValueError(f"candidates ({len(candidates)}) and llm_outputs ({len(llm_outputs)}) differ in length")
     results = []
     for (item, base_score), llm_text in zip(candidates, llm_outputs):
         try:

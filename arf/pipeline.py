@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -145,6 +146,11 @@ class Pipeline:
         llm_pass_score: Minimum 0-9 LLM score to pass in ``"gate"`` mode.
             The default 6 corresponds to "clearly related" on the usual
             calibration prompts.
+        llm_workers: Number of threads used to call *llm_fn* for the
+            uncertain candidates of one query (default 1 = sequential).
+            Raise it to overlap network latency; *llm_fn* must then be
+            thread-safe.  Results keep the candidate order, and *on_error*
+            is still invoked from the calling thread.
         llm_error_policy: What to do with a candidate when *llm_fn* raises
             or returns output with no parseable score.  ``"keep"`` (default)
             returns it at its retrieval score — it already passed the
@@ -234,6 +240,7 @@ class Pipeline:
         keyword_boost: float = 0.05,
         llm_mode: str = "gate",
         llm_pass_score: int = 6,
+        llm_workers: int = 1,
         llm_error_policy: str = "keep",
         on_error: Optional[Callable[[str, Exception], None]] = None,
         candidate_multiplier: float = 3.0,
@@ -260,6 +267,8 @@ class Pipeline:
             raise ValueError(f"llm_mode must be one of {self._LLM_MODES}, got {llm_mode!r}")
         if not 0 <= llm_pass_score <= 9:
             raise ValueError(f"llm_pass_score must be within 0-9, got {llm_pass_score!r}")
+        if llm_workers < 1:
+            raise ValueError(f"llm_workers must be >= 1, got {llm_workers!r}")
 
         self.doc_config = doc_config or DocumentConfig()
         self.triage = triage or Triage()
@@ -292,6 +301,7 @@ class Pipeline:
         self.keyword_boost = keyword_boost
         self.llm_mode = llm_mode
         self.llm_pass_score = llm_pass_score
+        self.llm_workers = llm_workers
         self.llm_error_policy = llm_error_policy
         self.on_error = on_error
         self.candidate_multiplier = candidate_multiplier
@@ -603,11 +613,10 @@ class Pipeline:
         (keep at retrieval score, or drop) and always reported.
         """
         verified: List[Scored] = []
-        for item, base_score in candidates:
-            try:
-                raw_output = self.llm_fn(query, item)
-            except Exception as exc:
-                self._report_error("llm_fn", exc, f"query={query[:40]!r}")
+        outputs = self._call_llm_all(query, candidates)
+        for (item, base_score), raw_output in zip(candidates, outputs):
+            if isinstance(raw_output, Exception):
+                self._report_error("llm_fn", raw_output, f"query={query[:40]!r}")
                 self._apply_llm_error_policy(item, base_score, verified)
                 continue
             try:
@@ -626,6 +635,26 @@ class Pipeline:
                 if adj >= self.triage.accept_threshold:
                     verified.append((item, adj))
         return verified
+
+    def _call_llm_all(self, query: str, candidates: List[Scored]) -> List[Any]:
+        """Call *llm_fn* for every candidate, in order; exceptions are returned, not raised.
+
+        With ``llm_workers > 1`` the calls overlap on a thread pool, which
+        is where almost all of a query's wall-clock time goes once more
+        than one candidate needs verification.
+        """
+
+        def call(item: Any) -> Any:
+            try:
+                return self.llm_fn(query, item)
+            except Exception as exc:  # reported per candidate by the caller
+                return exc
+
+        items = [item for item, _score in candidates]
+        if self.llm_workers > 1 and len(items) > 1:
+            with ThreadPoolExecutor(max_workers=min(self.llm_workers, len(items))) as pool:
+                return list(pool.map(call, items))
+        return [call(item) for item in items]
 
     def _apply_llm_error_policy(self, item: Any, base_score: float, verified: List[Scored]) -> None:
         if self.llm_error_policy == "keep":
