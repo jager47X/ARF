@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keyword-only hit is re-scored by cosine against its stored embedding, and one without an
   embedding gets `keyword_floor` (default `verify_threshold`); all hits receive `keyword_boost`
   (default 0.05). `Pipeline(keyword_mode="max")` restores the old merge (`arf/pipeline.py`)
+- **LLM verification is a gate, not a score multiplier** — an uncertain candidate whose LLM score
+  reaches `llm_pass_score` (default 6) is accepted and keeps its retrieval score; the LLM score is
+  reported as `llm_score` on each result. The multiplicative blend (0.5×–1.5×, capped at 1.0) let a
+  0.70 document become 1.0 and evict everything else through the gap filter, and demanded a higher
+  LLM score from lower-ranked candidates. `Pipeline(llm_mode="blend")` restores it
+- **Gap filter always uses retrieval scores**, in both LLM modes (`arf/pipeline.py`)
 
 ### Added
 - `DocumentConfig.embedding_field` (default `"embedding"`) — the field holding a document's stored

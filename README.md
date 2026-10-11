@@ -197,6 +197,24 @@ puts every keyword hit on the semantic scale before merging:
 Every hit then receives `keyword_boost`. Set `keyword_mode="max"` to merge raw keyword scores
 as-is (only sensible if they are already cosine-like).
 
+### LLM verification — `llm_fn`
+
+```python
+pipeline = Pipeline(
+    ...,
+    llm_fn=my_llm_verify,   # (query, doc_dict) → text containing a 0-9 score, e.g. "Score: 7"
+    llm_pass_score=6,       # default
+)
+results = pipeline.run("...")
+results[0]["llm_score"]     # 0-9, or None if the candidate never reached the LLM
+```
+
+Only *uncertain* candidates reach the LLM. By default (`llm_mode="gate"`) its 0-9 score is a
+**pass/fail gate**: a candidate scoring at least `llm_pass_score` is accepted and keeps its
+retrieval score, so ranking and the gap filter stay on a single scale. The gap filter is always
+measured on retrieval scores. `llm_mode="blend"` restores the pre-0.3.0 multiplicative blend
+(`parser_range`, default 0.5×–1.5×).
+
 ### QueryGraph — rephrase chain walk
 
 ```python

@@ -16,17 +16,26 @@ No external dependencies beyond the other ``arf`` modules.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from arf.document import Document, DocumentConfig
 from arf.features import FeatureExtractor, cosine_similarity
 from arf.query_graph import follow_rephrase_chain
-from arf.score_parser import adjust_score as _adjust_score
+from arf.score_parser import extract_score, multiplier
 from arf.triage import Triage
 
 logger = logging.getLogger(__name__)
 
 Scored = Tuple[Any, float]
+
+
+@dataclass
+class _RunContext:
+    """Per-``run()`` scratch state threaded through the stages."""
+
+    # dedupe key -> 0-9 score the LLM gave that candidate
+    llm_scores: Dict[Any, int] = field(default_factory=dict)
 
 
 def _make_key_fn(config: DocumentConfig) -> Callable[[Any], Any]:
@@ -65,7 +74,9 @@ class Pipeline:
         search_fn: ``(embedding, top_k) -> [(dict, float), ...]``
         embed_fn: ``(text) -> [float, ...]``
         predict_fn: ``(feature_vectors) -> [float, ...]`` (probabilities)
-        llm_fn: ``(query, document_dict) -> str`` (raw LLM output with score)
+        llm_fn: ``(query, document_dict) -> str`` — raw LLM output containing
+            a 0-9 relevance score (see :mod:`arf.score_parser` for accepted
+            formats).  How the score is used depends on *llm_mode*.
         cache_lookup: ``(query) -> {"results": ..., "next": ...} | None``
         cache_store: ``(query, results) -> None``
         link_fn: ``(source_query, target_query) -> None``
@@ -82,7 +93,8 @@ class Pipeline:
         resolve_fn: ``(parent_id) -> dict | None``
         summarize_fn: ``(query, Document, context_list) -> str``
         graph_max_hops: Max rephrase chain depth.
-        parser_range: ``(min_mult, max_mult)`` for score blending.
+        parser_range: ``(min_mult, max_mult)`` for score blending
+            (``llm_mode="blend"`` only).
         predict_zones: ``(low, high)`` probability zones for MLP triage.
         max_rephrase: Number of rephrase-and-retry attempts.
         unreviewed_policy: What to do with candidates in the "needs review"
@@ -103,10 +115,22 @@ class Pipeline:
             sent for review rather than accepted or rejected outright.
         keyword_boost: Additive bonus applied to every keyword hit in
             ``"rescore"`` mode (result capped at 1.0).
+        llm_mode: How the LLM's 0-9 score is used for uncertain candidates.
+            ``"gate"`` (default): pass/fail — a candidate scoring at least
+            *llm_pass_score* is accepted and keeps its **retrieval** score,
+            so ranking and the gap filter stay on one scale; the LLM score
+            is reported as ``"llm_score"`` in the results.
+            ``"blend"``: pre-0.3.0 behaviour — the retrieval score is
+            multiplied by a factor in *parser_range* and the candidate is
+            accepted if the blended score reaches ``accept_threshold``.
+        llm_pass_score: Minimum 0-9 LLM score to pass in ``"gate"`` mode.
+            The default 6 corresponds to "clearly related" on the usual
+            calibration prompts.
     """
 
     _UNREVIEWED_POLICIES = ("keep", "drop")
     _KEYWORD_MODES = ("rescore", "max")
+    _LLM_MODES = ("gate", "blend")
 
     def __init__(
         self,
@@ -145,11 +169,17 @@ class Pipeline:
         keyword_mode: str = "rescore",
         keyword_floor: Optional[float] = None,
         keyword_boost: float = 0.05,
+        llm_mode: str = "gate",
+        llm_pass_score: int = 6,
     ):
         if unreviewed_policy not in self._UNREVIEWED_POLICIES:
             raise ValueError(f"unreviewed_policy must be one of {self._UNREVIEWED_POLICIES}, got {unreviewed_policy!r}")
         if keyword_mode not in self._KEYWORD_MODES:
             raise ValueError(f"keyword_mode must be one of {self._KEYWORD_MODES}, got {keyword_mode!r}")
+        if llm_mode not in self._LLM_MODES:
+            raise ValueError(f"llm_mode must be one of {self._LLM_MODES}, got {llm_mode!r}")
+        if not 0 <= llm_pass_score <= 9:
+            raise ValueError(f"llm_pass_score must be within 0-9, got {llm_pass_score!r}")
 
         self.doc_config = doc_config or DocumentConfig()
         self.triage = triage or Triage()
@@ -180,6 +210,8 @@ class Pipeline:
         self.keyword_mode = keyword_mode
         self.keyword_floor = keyword_floor
         self.keyword_boost = keyword_boost
+        self.llm_mode = llm_mode
+        self.llm_pass_score = llm_pass_score
 
         # Emitted at most once per instance so a mis-calibrated threshold
         # setup is visible without flooding the logs on every query.
@@ -200,8 +232,11 @@ class Pipeline:
           objects (if *resolve_fn* is provided)
         * ``"summary"`` — LLM-generated summary string (if *summarize_fn*
           is provided)
+        * ``"llm_score"`` — the 0-9 score the LLM gave this candidate, or
+          ``None`` if it never reached LLM verification
         """
         original_query = query
+        ctx = _RunContext()
 
         # 1. Moderation
         if self.moderate_fn is not None:
@@ -230,7 +265,7 @@ class Pipeline:
         # 4. Search loop (with rephrase retry)
         previous_attempts: List[str] = []
         for attempt in range(self.max_rephrase + 1):
-            results = self._search_and_rank(query, top_k=top_k)
+            results = self._search_and_rank(query, top_k=top_k, ctx=ctx)
             if results:
                 break
 
@@ -262,14 +297,15 @@ class Pipeline:
                 logger.debug("cache_store failed for %r", query[:60])
 
         # 6. Build output with optional parent context + summaries
-        return self._build_output(results, original_query)
+        return self._build_output(results, original_query, ctx)
 
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
 
-    def _search_and_rank(self, query: str, *, top_k: int) -> List[Scored]:
+    def _search_and_rank(self, query: str, *, top_k: int, ctx: Optional[_RunContext] = None) -> List[Scored]:
         """Embed → search → keyword merge → triage → MLP → LLM verify."""
+        ctx = ctx if ctx is not None else _RunContext()
         # Embed
         embedding = self.embed_fn(query)
 
@@ -324,7 +360,7 @@ class Pipeline:
         llm_verified: List[Scored] = []
         unreviewed: List[Scored] = []
         if self.llm_fn is not None and mlp_uncertain:
-            llm_verified = self._llm_verify(query, mlp_uncertain)
+            llm_verified = self._llm_verify(query, mlp_uncertain, ctx)
         elif mlp_uncertain and self.unreviewed_policy == "keep":
             # Nothing left to review these — keep them at their retrieval
             # score rather than silently discarding the whole grey zone.
@@ -334,11 +370,20 @@ class Pipeline:
         # Merge all accepted
         merged = self.triage.dedupe(result.accepted, mlp_accepted, llm_verified, unreviewed, key_fn=self._key_fn)
 
-        # Gap filter
+        # Gap filter — always on retrieval scores, so a blended LLM boost can
+        # neither evict the other candidates nor rescue a far-off one.
         if merged:
-            merged = self.triage.gap_filter(merged)
+            retrieval_scores = {self._key_fn(item): float(score) for item, score in candidates}
+            merged = self._gap_filter_on_retrieval(merged, retrieval_scores)
 
         return merged[: top_k]
+
+    def _gap_filter_on_retrieval(self, merged: List[Scored], retrieval_scores: Dict[Any, float]) -> List[Scored]:
+        def retrieval(c: Scored) -> float:
+            return retrieval_scores.get(self._key_fn(c[0]), float(c[1]))
+
+        top = max(retrieval(c) for c in merged)
+        return [c for c in merged if top - retrieval(c) <= self.triage.gap]
 
     def _merge_keyword_hits(
         self, candidates: List[Scored], kw_results: List[Scored], query_embedding: Any
@@ -434,35 +479,43 @@ class Pipeline:
             logger.warning("MLP triage failed: %s — sending all to LLM", exc)
             return [], candidates
 
-    def _llm_verify(self, query: str, candidates: List[Scored]) -> List[Scored]:
-        """Run LLM verification, parse scores, blend."""
+    def _llm_verify(self, query: str, candidates: List[Scored], ctx: _RunContext) -> List[Scored]:
+        """Run LLM verification and apply *llm_mode* (gate or blend)."""
         verified: List[Scored] = []
         for item, base_score in candidates:
             try:
                 raw_output = self.llm_fn(query, item)
-                adj = _adjust_score(
-                    base_score,
-                    raw_output,
-                    min_mult=self.parser_min,
-                    max_mult=self.parser_max,
-                )
-                if adj >= self.triage.accept_threshold:
-                    verified.append((item, adj))
+                llm_score = extract_score(raw_output)
             except Exception:
                 logger.debug("LLM verify failed for item; keeping base score %.3f", base_score)
                 if base_score >= self.triage.accept_threshold:
                     verified.append((item, base_score))
+                continue
+
+            ctx.llm_scores[self._key_fn(item)] = llm_score
+            if self.llm_mode == "gate":
+                if llm_score >= self.llm_pass_score:
+                    verified.append((item, base_score))
+            else:
+                adj = min(base_score * multiplier(llm_score, min_mult=self.parser_min, max_mult=self.parser_max), 1.0)
+                if adj >= self.triage.accept_threshold:
+                    verified.append((item, adj))
         return verified
 
     def _build_output(
-        self, results: List[Scored], query: str
+        self, results: List[Scored], query: str, ctx: Optional[_RunContext] = None
     ) -> List[Dict[str, Any]]:
         """Convert scored tuples to rich output dicts."""
+        llm_scores = ctx.llm_scores if ctx is not None else {}
         output: List[Dict[str, Any]] = []
         for item, score in results:
             doc = Document.from_dict(item, self.doc_config) if isinstance(item, dict) else item
 
-            entry: Dict[str, Any] = {"document": doc, "score": score}
+            entry: Dict[str, Any] = {
+                "document": doc,
+                "score": score,
+                "llm_score": llm_scores.get(self._key_fn(item)),
+            }
 
             # Resolve parent chain
             if self.resolve_fn is not None and isinstance(doc, Document) and doc.parent_id:
