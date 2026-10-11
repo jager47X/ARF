@@ -80,6 +80,7 @@ def test_payload_shape_is_versioned_and_json_friendly():
         "item": _docs()[0][0],
         "score": 0.92,
         "llm_score": None,
+        "rerank_score": None,
         "summary": "",
     }
     json.dumps(payload)  # must not raise
@@ -116,6 +117,22 @@ def test_cache_hit_serves_summaries_and_llm_scores_without_calling_llms():
     assert summaries == ["1", "2"] and verifications == ["2"]  # nothing re-run
     assert [r["summary"] for r in second] == [r["summary"] for r in first]
     assert second[1]["llm_score"] == 8
+
+
+def test_cache_hit_serves_rerank_scores():
+    cache = DictCache(json_roundtrip=True)
+    calls = []
+
+    def rerank_fn(query, items):
+        calls.append(len(items))
+        return [0.75] * len(items)
+
+    pipeline, _ = _pipeline(cache, rerank_fn=rerank_fn)
+    first = pipeline.run("q")
+    second = pipeline.run("q")
+    assert calls == [1]  # only the 0.78 doc was re-ranked, and only once
+    assert [r["rerank_score"] for r in first] == [None, 0.75]
+    assert [r["rerank_score"] for r in second] == [None, 0.75]
 
 
 def test_ttl_expires_entries():
