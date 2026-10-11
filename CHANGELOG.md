@@ -22,6 +22,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `DocumentConfig.embedding_field` (default `"embedding"`) — the field holding a document's stored
   embedding, used by `Document.from_dict` and keyword re-scoring (`arf/document.py`)
 - `arf.features.cosine_similarity` public helper
+- `Pipeline(alias_fn=...)` — `(query) -> [(alias, title), ...]` alias/synonym hits fed to the MLP
+  features (`arf/pipeline.py`)
+- `FeatureExtractor.extract_batch(top_score=...)` to measure `score_gap_from_top` against the
+  query's real top candidate when scoring a subset (`arf/features.py`)
+
+### Fixed
+- **MLP saw different features at inference than at training** — the pipeline never passed
+  keyword/alias matches (so `keyword_match`, `alias_match` and `match_type` were always 0) and
+  computed `score_gap_from_top` against the review band's own top instead of the query's top.
+  Both now flow through `_mlp_triage`; `sample-project/train.py` passes the same global top
+  (`arf/pipeline.py`, `sample-project/train.py`)
 - **Threshold-calibration warning** — the pipeline logs a one-time warning (with the top observed
   score) when triage rejects every candidate, which usually means the thresholds don't match the
   embedding model's score range (`arf/pipeline.py`)

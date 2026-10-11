@@ -92,8 +92,11 @@ def main():
         faiss.normalize_L2(q_vec)
         scores, indices = index.search(q_vec, index.ntotal)
 
-        # Find this doc's score in search results
+        # Find this doc's score in search results (FAISS returns them sorted,
+        # so the first row is the query's top score — the pipeline passes the
+        # same global top at inference time for score_gap_from_top).
         doc_score = 0.0
+        top_score = float(scores[0][0]) if len(scores[0]) else 0.0
         for score_val, idx in zip(scores[0], indices[0]):
             if idx >= 0 and idx < len(index_map):
                 result_doc = stored_docs[index_map[idx]]
@@ -106,6 +109,7 @@ def main():
             document=doc,
             semantic_score=doc_score,
             query_embedding=q_emb,
+            top_score=top_score,
         )
         vector = extractor.to_vector(features)
         X_list.append(vector)

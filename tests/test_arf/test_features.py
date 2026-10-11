@@ -59,6 +59,14 @@ def test_extract_batch():
     assert batch[1]["score_gap_from_top"] > 0
 
 
+def test_extract_batch_with_explicit_top_score():
+    # When the batch is a subset (e.g. only the review band), the caller passes
+    # the query's real top score so the gap is measured against it.
+    ext = FeatureExtractor()
+    batch = ext.extract_batch("q", [({"title": "A", "text": "..."}, 0.78)], top_score=0.92)
+    assert round(batch[0]["score_gap_from_top"], 4) == 0.14
+
+
 def test_feature_names_static():
     names = FeatureExtractor.feature_names()
     assert names == FEATURE_NAMES

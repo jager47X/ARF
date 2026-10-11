@@ -334,11 +334,21 @@ class FeatureExtractor:
         query_embedding: Optional[list] = None,
         keyword_matches: Optional[list] = None,
         alias_matches: Optional[list] = None,
+        top_score: Optional[float] = None,
     ) -> List[Dict[str, float]]:
-        """Extract features for every result of a single query."""
+        """Extract features for every result of a single query.
+
+        Args:
+            top_score: Score of the best candidate *for this query*.  Pass it
+                when *results* is a subset (e.g. only the "needs review"
+                band) so ``score_gap_from_top`` is measured against the real
+                top, not the top of the subset.  Defaults to the highest
+                score in *results*.
+        """
         if not results:
             return []
-        top_score = max((float(score) for _doc, score in results), default=0.0)
+        if top_score is None:
+            top_score = max((float(score) for _doc, score in results), default=0.0)
         feature_list: List[Dict[str, float]] = []
         for doc, score in results:
             doc_embedding = doc.get("embedding") if isinstance(doc, dict) else None

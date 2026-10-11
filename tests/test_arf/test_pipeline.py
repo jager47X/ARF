@@ -5,6 +5,7 @@ import logging
 import pytest
 
 from arf.document import DocumentConfig
+from arf.features import FEATURE_NAMES
 from arf.pipeline import Pipeline
 from arf.triage import Triage
 
@@ -259,3 +260,66 @@ def test_keyword_mode_max_merges_raw_scores():
 def test_invalid_keyword_mode_raises():
     with pytest.raises(ValueError, match="keyword_mode"):
         Pipeline(search_fn=_mock_search, embed_fn=_mock_embed, keyword_mode="rrf")
+
+
+# ---------------------------------------------------------------------------
+# MLP sees the same features it was trained on
+# ---------------------------------------------------------------------------
+
+
+def _feature(vector, name):
+    return vector[FEATURE_NAMES.index(name)]
+
+
+def test_mlp_receives_keyword_alias_and_global_gap_features():
+    seen = []
+
+    def predict_fn(vectors):
+        seen.extend(vectors)
+        return [0.9] * len(vectors)
+
+    pipeline = Pipeline(
+        search_fn=_mock_search,
+        embed_fn=_mock_embed,
+        predict_fn=predict_fn,
+        keyword_fn=lambda q: [({"_id": "2", "title": "5th Amendment", "text": "No person shall..."}, 7.0)],
+        alias_fn=lambda q: [("fifth", "5th Amendment")],
+    )
+    pipeline.run("fifth amendment")
+
+    assert len(seen) == 1  # only the 0.78 (+0.05) doc is in the review band
+    vec = seen[0]
+    assert _feature(vec, "keyword_match") == 1
+    assert _feature(vec, "alias_match") == 1
+    assert _feature(vec, "match_type") == 2
+    # Gap is measured against the query's overall top (0.92), not the review band's own top.
+    assert round(_feature(vec, "score_gap_from_top"), 4) == round(0.92 - 0.83, 4)
+
+
+def test_mlp_gap_feature_without_keyword_fn_uses_global_top():
+    seen = []
+
+    def predict_fn(vectors):
+        seen.extend(vectors)
+        return [0.9] * len(vectors)
+
+    Pipeline(search_fn=_mock_search, embed_fn=_mock_embed, predict_fn=predict_fn).run("q")
+    assert round(_feature(seen[0], "score_gap_from_top"), 4) == 0.14
+    assert _feature(seen[0], "keyword_match") == 0
+    assert _feature(seen[0], "alias_match") == 0
+
+
+def test_alias_fn_failure_is_logged_and_ignored(caplog):
+    def broken_alias_fn(query):
+        raise RuntimeError("alias index down")
+
+    pipeline = Pipeline(
+        search_fn=_mock_search,
+        embed_fn=_mock_embed,
+        predict_fn=lambda vectors: [0.9] * len(vectors),
+        alias_fn=broken_alias_fn,
+    )
+    with caplog.at_level(logging.WARNING, logger="arf.pipeline"):
+        results = pipeline.run("q")
+    assert [r["document"].id for r in results] == ["1", "2"]
+    assert any("alias_fn failed" in r.getMessage() for r in caplog.records)
