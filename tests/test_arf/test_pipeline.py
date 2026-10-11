@@ -625,6 +625,34 @@ def test_invalid_llm_mode_and_pass_score_raise():
 
 
 # ---------------------------------------------------------------------------
+# decided_by: which stage let each result through
+# ---------------------------------------------------------------------------
+
+
+def _decisions(pipeline):
+    return {r["document"].id: r["decided_by"] for r in pipeline.run("q")}
+
+
+def test_decided_by_reports_the_accepting_stage():
+    assert _decisions(Pipeline(search_fn=_mock_search, embed_fn=_mock_embed)) == {"1": "threshold", "2": "unreviewed"}
+    assert _decisions(Pipeline(search_fn=_mock_search, embed_fn=_mock_embed, llm_fn=_llm_saying({"2": 8}))) == {
+        "1": "threshold",
+        "2": "llm",
+    }
+    assert _decisions(
+        Pipeline(search_fn=_mock_search, embed_fn=_mock_embed, predict_fn=lambda vectors: [0.9] * len(vectors))
+    ) == {"1": "threshold", "2": "mlp"}
+    assert _decisions(Pipeline(search_fn=_mock_search, embed_fn=_mock_embed, rerank_fn=lambda q, items: [0.9])) == {
+        "1": "threshold",
+        "2": "rerank",
+    }
+    assert _decisions(Pipeline(search_fn=_mock_search, embed_fn=_mock_embed, llm_fn=_raising_llm)) == {
+        "1": "threshold",
+        "2": "llm_error",
+    }
+
+
+# ---------------------------------------------------------------------------
 # Candidate pool size
 # ---------------------------------------------------------------------------
 

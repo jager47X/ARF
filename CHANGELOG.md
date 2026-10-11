@@ -45,6 +45,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `alias_fn` and `summarize_fn` failures no longer disappear (`arf/pipeline.py`)
 
 ### Added
+- **Search page and admin console** (`arf.ui`, `pip install advanced-rag-framework[ui]`) —
+  `python -m arf.ui --demo` serves a built-in, key-free demo; `--app module:factory` or
+  `create_app(pipeline, admin_token=...)` serves yours. The search page shows each result's score,
+  the stage that accepted it, LLM/re-ranker scores, summary and context; the admin console has live
+  stat tiles, the candidate funnel and stage latency (with table views), recent runs, a live
+  threshold/zone/policy editor, an evaluation runner and cache tools. The admin API needs the
+  `X-ARF-Admin-Token` header (`ARF_ADMIN_TOKEN`) or a loopback client (`arf/ui/`)
+- Every result reports `decided_by` — the stage that let it through (`threshold`, `mlp`, `rerank`,
+  `llm`, `llm_error`, `unreviewed`); cached with the entry (`arf/pipeline.py`)
 - **Per-run and aggregate statistics** — `pipeline.last_stats` (`arf.RunStats`: funnel counts per
   stage, cache hit, errors, per-stage timings) and `pipeline.stats` (`arf.PipelineStats`:
   `summary()` with `llm_share_of_candidates`, `llm_calls_per_query`, `cache_hit_rate`,

@@ -35,11 +35,18 @@ ml = [
 rerank = [
     "sentence-transformers>=2.2",
 ]
+# User search page + admin console (arf.ui)
+ui = [
+    "fastapi>=0.100",
+    "uvicorn>=0.23",
+]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "ruff>=0.4",
     "numpy>=1.24",
+    "fastapi>=0.100",
+    "httpx>=0.24",
 ]
 # Full production dependencies (for rag_dependencies)
 full = [
@@ -55,6 +62,9 @@ full = [
 
 [tool.setuptools.packages.find]
 include = ["arf*", "rag_dependencies*"]
+
+[tool.setuptools.package-data]
+arf = ["ui/static/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

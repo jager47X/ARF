@@ -96,7 +96,8 @@ pipeline = Pipeline(
 )
 
 results = pipeline.run("what is due process?", top_k=5)
-# [{"document": Document, "score": 0.94, "context": [...], "summary": "..."}, ...]
+# [{"document": Document, "score": 0.94, "decided_by": "llm", "llm_score": 8, "rerank_score": None,
+#   "context": [...], "summary": "..."}, ...]
 ```
 
 ## Components
@@ -414,6 +415,39 @@ print(report.markdown())
 `arf.evaluation` also exposes `recall_at_k`, `precision_at_k`, `hit_rate_at_k`, `reciprocal_rank`
 and `ndcg_at_k` for your own harness. Pure Python, no dependencies.
 
+## Admin console & search UI
+
+```bash
+pip install advanced-rag-framework[ui]
+python -m arf.ui --demo                     # no keys, no database: a built-in demo corpus
+#   http://127.0.0.1:8000/        search page
+#   http://127.0.0.1:8000/admin   admin console
+```
+
+Serve your own pipeline with a factory (`module:callable` returning a `Pipeline`), or mount the app
+yourself:
+
+```bash
+python -m arf.ui --app mypackage.search:build_pipeline --admin-token "$ARF_ADMIN_TOKEN"
+```
+
+```python
+from arf.ui import create_app
+app = create_app(pipeline, admin_token="...", cache_clear_fn=my_cache.flushall)   # uvicorn mymodule:app
+```
+
+* **Search page** (`/`, `POST /api/query`): results with score, the stage that accepted each one
+  (`threshold` / `mlp` / `rerank` / `llm` / `unreviewed`), LLM and re-ranker scores, summaries and
+  context, plus a per-query strip (fetched → review → LLM, cache hit, latency, errors).
+* **Admin console** (`/admin`, `/admin/api/*`): live stat tiles (cache hit rate, LLM share of
+  candidates, LLM calls per query, latency, errors), the candidate funnel and per-stage latency
+  with table views, recent runs, a **live editor for thresholds, zones and policies** (applied to
+  the running pipeline, not persisted), an **evaluation runner** for labelled queries, and cache
+  tools.
+* **Access control**: the admin API requires the `X-ARF-Admin-Token` header (`admin_token=` or
+  `ARF_ADMIN_TOKEN`). Without a token it only answers requests from localhost. The search page is
+  public — put it behind your own auth if the corpus is not.
+
 ## Bring Your Own Everything
 
 | Slot | What you provide | Examples |
@@ -443,6 +477,9 @@ pip install advanced-rag-framework[ml]
 
 # With the built-in cross-encoder re-ranker (sentence-transformers)
 pip install advanced-rag-framework[rerank]
+
+# With the search page + admin console (fastapi + uvicorn)
+pip install advanced-rag-framework[ui]
 ```
 
 ## Sample Project

@@ -45,6 +45,8 @@ class _RunContext:
     llm_scores: Dict[Any, int] = field(default_factory=dict)
     # dedupe key -> probability the cross-encoder gave that candidate
     rerank_scores: Dict[Any, float] = field(default_factory=dict)
+    # dedupe key -> which stage let the candidate through
+    decided_by: Dict[Any, str] = field(default_factory=dict)
     # dedupe key -> summary served from the cache (skips summarize_fn)
     cached_summaries: Dict[Any, str] = field(default_factory=dict)
     # what every stage did, exposed as Pipeline.last_stats afterwards
@@ -382,6 +384,10 @@ class Pipeline:
           ``None`` if it never reached LLM verification
         * ``"rerank_score"`` — the probability *rerank_fn* gave this
           candidate, or ``None`` if it never reached the re-ranker
+        * ``"decided_by"`` — the stage that let the candidate through:
+          ``"threshold"``, ``"mlp"``, ``"rerank"``, ``"llm"``,
+          ``"llm_error"`` (kept by *llm_error_policy*) or ``"unreviewed"``
+          (kept by *unreviewed_policy*)
 
         Afterwards :attr:`last_stats` holds this run's
         :class:`~arf.stats.RunStats` and :attr:`stats` has absorbed it.
@@ -614,6 +620,17 @@ class Pipeline:
             stats.unreviewed_kept += len(unreviewed)
             logger.debug("Keeping %d unreviewed candidate(s) (no reviewer configured)", len(unreviewed))
 
+        # Remember which stage let each candidate through (reported as "decided_by")
+        for bucket, stage in (
+            (result.accepted, "threshold"),
+            (mlp_accepted, "mlp"),
+            (rerank_accepted, "rerank"),
+            (llm_verified, "llm"),
+            (unreviewed, "unreviewed"),
+        ):
+            for item, _score in bucket:
+                ctx.decided_by.setdefault(self._key_fn(item), stage)
+
         # Merge all accepted
         merged = self.triage.dedupe(
             result.accepted, mlp_accepted, rerank_accepted, llm_verified, unreviewed, key_fn=self._key_fn
@@ -806,14 +823,14 @@ class Pipeline:
             if isinstance(raw_output, Exception):
                 ctx.stats.llm_errors += 1
                 self._report_error("llm_fn", raw_output, f"query={query[:40]!r}", ctx)
-                self._apply_llm_error_policy(item, base_score, verified)
+                self._apply_llm_error_policy(item, base_score, verified, ctx)
                 continue
             try:
                 llm_score = extract_score(raw_output)
             except ValueError as exc:
                 ctx.stats.llm_errors += 1
                 self._report_error("llm_fn output parsing", exc, f"output={str(raw_output)[:60]!r}", ctx)
-                self._apply_llm_error_policy(item, base_score, verified)
+                self._apply_llm_error_policy(item, base_score, verified, ctx)
                 continue
 
             ctx.llm_scores[self._key_fn(item)] = llm_score
@@ -850,9 +867,13 @@ class Pipeline:
                 return list(pool.map(call, items))
         return [call(item) for item in items]
 
-    def _apply_llm_error_policy(self, item: Any, base_score: float, verified: List[Scored]) -> None:
+    def _apply_llm_error_policy(
+        self, item: Any, base_score: float, verified: List[Scored], ctx: Optional[_RunContext] = None
+    ) -> None:
         if self.llm_error_policy == "keep":
             verified.append((item, base_score))
+            if ctx is not None:
+                ctx.decided_by[self._key_fn(item)] = "llm_error"
 
     def _report_error(self, stage: str, exc: Exception, detail: str = "", ctx: Optional[_RunContext] = None) -> None:
         """Log a swallowed error at WARNING and forward it to *on_error*.
@@ -878,6 +899,7 @@ class Pipeline:
         """Convert scored tuples to rich output dicts."""
         llm_scores = ctx.llm_scores if ctx is not None else {}
         rerank_scores = ctx.rerank_scores if ctx is not None else {}
+        decided_by = ctx.decided_by if ctx is not None else {}
         cached_summaries = ctx.cached_summaries if ctx is not None else {}
         output: List[Dict[str, Any]] = []
         for item, score in results:
@@ -889,6 +911,7 @@ class Pipeline:
                 "score": score,
                 "llm_score": llm_scores.get(key),
                 "rerank_score": rerank_scores.get(key),
+                "decided_by": decided_by.get(key),
             }
 
             # Resolve parent chain
@@ -1008,6 +1031,7 @@ class Pipeline:
                 "score": float(score),
                 "llm_score": entry.get("llm_score"),
                 "rerank_score": entry.get("rerank_score"),
+                "decided_by": entry.get("decided_by"),
                 "summary": entry.get("summary") or "",
             }
             for (item, score), entry in zip(results, output)
@@ -1049,6 +1073,8 @@ class Pipeline:
                 ctx.llm_scores[key] = int(entry["llm_score"])
             if entry.get("rerank_score") is not None:
                 ctx.rerank_scores[key] = float(entry["rerank_score"])
+            if entry.get("decided_by"):
+                ctx.decided_by[key] = str(entry["decided_by"])
             if entry.get("summary"):
                 ctx.cached_summaries[key] = entry["summary"]
         return self._build_output(results, query, ctx)
