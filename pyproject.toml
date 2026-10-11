@@ -58,7 +58,8 @@ include = ["arf*", "rag_dependencies*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=arf --cov=rag_dependencies --cov-report=term-missing --cov-fail-under=10"
+# The gate applies to the library; rag_dependencies is the (separately tested) legal app layer.
+addopts = "--cov=arf --cov-report=term-missing --cov-fail-under=85"
 
 [tool.ruff]
 target-version = "py310"
