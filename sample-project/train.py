@@ -21,7 +21,7 @@ import numpy as np
 import voyageai
 from dotenv import load_dotenv
 
-from arf import DocumentConfig, FeatureExtractor
+from arf import CorpusStats, DocumentConfig, FeatureExtractor
 from arf.trainer import train_reranker
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
@@ -34,6 +34,7 @@ OUT_DIR = Path(__file__).resolve().parent
 INDEX_PATH = OUT_DIR / "faiss.index"
 DOCS_PATH = OUT_DIR / "docs.json"
 MODEL_PATH = OUT_DIR / "recipe_reranker.joblib"
+STATS_PATH = OUT_DIR / "corpus_stats.json"
 
 recipe_config = DocumentConfig(
     id_field="title",
@@ -64,8 +65,15 @@ def main():
     # Build title -> doc lookup
     title_to_doc = {doc["title"]: doc for doc in stored_docs}
 
+    # Corpus statistics give bm25_score real IDF weights.  Saved next to the
+    # model so query.py extracts features exactly the way they were trained.
+    corpus_stats = CorpusStats.from_documents(stored_docs, recipe_config)
+    with open(STATS_PATH, "w", encoding="utf-8") as f:
+        json.dump(corpus_stats.to_dict(), f)
+    print(f"Corpus stats: {corpus_stats.n_docs} docs, avgdl={corpus_stats.avgdl:.1f} → {STATS_PATH.name}")
+
     # Feature extractor
-    extractor = FeatureExtractor(recipe_config)
+    extractor = FeatureExtractor(recipe_config, corpus_stats=corpus_stats)
 
     # Generate feature vectors from training data
     print(f"Generating features for {len(TRAINING_DATA)} training pairs...")

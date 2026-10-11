@@ -33,6 +33,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without calling `llm_fn` / `summarize_fn` again. Pre-0.3.0 bare-list entries are still read
   (unless `cache_ttl` / `cache_version` is set). `cache_store` and `link_fn` now receive
   normalised keys (`arf/pipeline.py`)
+- **Features: version 2 — retrain your MLP models.** `bm25_score` is real BM25 (IDF + corpus
+  average length) when `CorpusStats` are supplied, `query_length` is a log-scaled token count
+  instead of a raw character count, `embedding_cosine_similarity` falls back to `semantic_score`
+  instead of 0 when the document has no stored embedding, and a 16th feature
+  `exact_phrase_match` was added. Model bundles now record `feature_version`; `load_reranker`
+  warns (or raises with `strict=True`) when a model was trained on another version
+  (`arf/features.py`, `arf/trainer.py`)
 - **Swallowed errors are logged at WARNING** (they were `debug` or silent) and forwarded to the new
   `on_error(stage, exc)` hook; `predict_fn`, `llm_fn`, `cache_store`, `store_query_fn`, `link_fn`,
   `alias_fn` and `summarize_fn` failures no longer disappear (`arf/pipeline.py`)
@@ -41,6 +48,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Pipeline(llm_error_policy="keep"|"drop", on_error=...)` — what happens to a candidate when the
   LLM call fails or its answer has no parseable score, and an observer hook for every swallowed
   error (`arf/pipeline.py`)
+- `arf.CorpusStats` (`from_documents`, `idf`, `to_dict`/`from_dict`) and
+  `Pipeline(corpus_stats=...)` / `FeatureExtractor(corpus_stats=...)`; `sample-project/train.py`
+  writes `corpus_stats.json` and `query.py` loads it (`arf/features.py`)
 - Cache controls: `cache_ttl` (expiry), `cache_version` (bulk invalidation after re-ingesting),
   `cache_normalize_fn` (key normalisation, default `arf.query_graph.normalize_query`), and an
   optional semantic lookup via `cache_nearest_fn` + `cache_similarity_threshold`
