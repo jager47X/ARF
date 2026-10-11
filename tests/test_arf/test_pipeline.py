@@ -285,6 +285,91 @@ def test_dedupe_uses_configured_id_field():
 
 
 # ---------------------------------------------------------------------------
+# LLM verification: gate (default) vs blend
+# ---------------------------------------------------------------------------
+
+
+def _llm_saying(score_by_id):
+    """Fake llm_fn: answers 'Score: N' per document id."""
+
+    def llm_fn(query, item):
+        return f"Reasoning: ...\nScore: {score_by_id[item['_id']]}"
+
+    return llm_fn
+
+
+def test_llm_gate_keeps_retrieval_score_and_reports_llm_score():
+    pipeline = Pipeline(search_fn=_mock_search, embed_fn=_mock_embed, llm_fn=_llm_saying({"2": 8}))
+    results = pipeline.run("q")
+    by_id = {r["document"].id: r for r in results}
+    assert set(by_id) == {"1", "2"}
+    assert by_id["2"]["score"] == 0.78  # retrieval score, not 0.78 * 1.39
+    assert by_id["2"]["llm_score"] == 8
+    assert by_id["1"]["llm_score"] is None  # accepted directly, never saw the LLM
+
+
+def test_llm_gate_pass_score_is_configurable():
+    dropped = Pipeline(search_fn=_mock_search, embed_fn=_mock_embed, llm_fn=_llm_saying({"2": 5}))
+    assert [r["document"].id for r in dropped.run("q")] == ["1"]
+
+    kept = Pipeline(search_fn=_mock_search, embed_fn=_mock_embed, llm_fn=_llm_saying({"2": 5}), llm_pass_score=5)
+    assert [r["document"].id for r in kept.run("q")] == ["1", "2"]
+
+
+def test_llm_gate_after_uncertain_mlp():
+    pipeline = Pipeline(
+        search_fn=_mock_search,
+        embed_fn=_mock_embed,
+        predict_fn=lambda vectors: [0.5] * len(vectors),
+        llm_fn=_llm_saying({"2": 7}),
+    )
+    results = pipeline.run("q")
+    assert [(r["document"].id, r["score"]) for r in results] == [("1", 0.92), ("2", 0.78)]
+
+
+def test_llm_blend_mode_is_legacy_multiplicative():
+    def run_with(score):
+        pipeline = Pipeline(
+            search_fn=_mock_search, embed_fn=_mock_embed, llm_fn=_llm_saying({"2": score}), llm_mode="blend"
+        )
+        return {r["document"].id: round(r["score"], 4) for r in pipeline.run("q")}
+
+    assert run_with(9)["2"] == 1.0  # 0.78 * 1.5 capped
+    assert run_with(6)["2"] == round(0.78 * (0.5 + 6 / 9), 4)  # 0.91 ≥ accept
+    assert "2" not in run_with(4)  # 0.78 * 0.94 < 0.85
+
+
+def test_gap_filter_uses_retrieval_scores_even_when_blending():
+    # A: 0.86 accepted outright; B: 0.72 in the review band, LLM says 9/9.
+    def search_fn(embedding, top_k):
+        return [({"_id": "A", "title": "A", "text": "..."}, 0.86), ({"_id": "B", "title": "B", "text": "..."}, 0.72)]
+
+    def make(gap):
+        return Pipeline(
+            search_fn=search_fn,
+            embed_fn=_mock_embed,
+            llm_fn=_llm_saying({"B": 9}),
+            llm_mode="blend",
+            triage=Triage(gap=gap),
+        )
+
+    # Blended B becomes 1.0.  Before 0.3.0 the gap filter used that 1.0 as the
+    # top and evicted A (1.0 - 0.86 > 0.10).  Now the gap is measured on
+    # retrieval scores: top is A at 0.86 and B (0.72) is the one too far away.
+    assert [r["document"].id for r in make(0.10).run("q")] == ["A"]
+    # With the default-sized gap both survive and B still reports its blended score.
+    results = make(0.20).run("q")
+    assert {r["document"].id: r["score"] for r in results} == {"A": 0.86, "B": 1.0}
+
+
+def test_invalid_llm_mode_and_pass_score_raise():
+    with pytest.raises(ValueError, match="llm_mode"):
+        Pipeline(search_fn=_mock_search, embed_fn=_mock_embed, llm_mode="vote")
+    with pytest.raises(ValueError, match="llm_pass_score"):
+        Pipeline(search_fn=_mock_search, embed_fn=_mock_embed, llm_pass_score=10)
+
+
+# ---------------------------------------------------------------------------
 # MLP sees the same features it was trained on
 # ---------------------------------------------------------------------------
 
