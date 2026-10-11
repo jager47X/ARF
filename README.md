@@ -165,6 +165,11 @@ result = triage.classify(candidates)
 | `verify_threshold` | Between this and `accept_threshold` → "needs review" (MLP → LLM) |
 | `gap` | Candidates more than this far below the top result are dropped |
 
+**Candidate pool.** `pipeline.run(query, top_k=10)` asks `search_fn` for `top_k × candidate_multiplier`
+candidates (default 3×, so 30) and slices the final list back to `top_k`; the triage, MLP and LLM
+stages need a pool larger than the result count to have anything to re-rank. Tune with
+`Pipeline(candidate_multiplier=..., max_candidates=...)`.
+
 **Calibrate the thresholds to your embedding model.** The defaults above assume cosine
 similarities where a strong match scores ≳0.85. Many models (e.g. OpenAI `text-embedding-3-*`)
 score relevant documents in the 0.3–0.6 range; with those, keep the *ordering* of the thresholds

@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   0.70 document become 1.0 and evict everything else through the gap filter, and demanded a higher
   LLM score from lower-ranked candidates. `Pipeline(llm_mode="blend")` restores it
 - **Gap filter always uses retrieval scores**, in both LLM modes (`arf/pipeline.py`)
+- **Search fetches a candidate pool, not just `top_k`** — `search_fn` is now asked for
+  `top_k × candidate_multiplier` candidates (default 3×, capped by `max_candidates`) so the
+  triage/MLP/LLM stages have something to re-rank; results are still sliced to `top_k`.
+  `candidate_multiplier=1.0` restores the old behaviour (`arf/pipeline.py`)
 - **Swallowed errors are logged at WARNING** (they were `debug` or silent) and forwarded to the new
   `on_error(stage, exc)` hook; `predict_fn`, `llm_fn`, `cache_store`, `store_query_fn`, `link_fn`,
   `alias_fn` and `summarize_fn` failures no longer disappear (`arf/pipeline.py`)

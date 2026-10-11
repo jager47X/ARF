@@ -137,6 +137,17 @@ class Pipeline:
             ``cache_store``, ``alias_fn``, ``predict_fn``, ``llm_fn``,
             ``summarize_fn``), e.g. to feed a metrics counter.  Exceptions
             raised by the hook itself are ignored.
+        candidate_multiplier: How many candidates to fetch from *search_fn*
+            relative to the requested ``top_k`` (default 3.0, i.e. 30 for
+            ``top_k=10``).  Triage, the MLP and the LLM need a pool larger
+            than the final result count to have anything to re-rank; ``1.0``
+            fetches exactly ``top_k`` (pre-0.3.0 behaviour).
+        max_candidates: Hard cap on the number fetched from *search_fn*,
+            whatever the multiplier says.  ``None`` means no cap.
+
+    Note:
+        ``Triage.top_k`` is only used by :meth:`Triage.apply`; the pipeline
+        takes ``top_k`` from :meth:`run`.
     """
 
     _UNREVIEWED_POLICIES = ("keep", "drop")
@@ -185,7 +196,13 @@ class Pipeline:
         llm_pass_score: int = 6,
         llm_error_policy: str = "keep",
         on_error: Optional[Callable[[str, Exception], None]] = None,
+        candidate_multiplier: float = 3.0,
+        max_candidates: Optional[int] = None,
     ):
+        if candidate_multiplier < 1.0:
+            raise ValueError(f"candidate_multiplier must be >= 1.0, got {candidate_multiplier!r}")
+        if max_candidates is not None and max_candidates < 1:
+            raise ValueError(f"max_candidates must be >= 1 or None, got {max_candidates!r}")
         if llm_error_policy not in self._LLM_ERROR_POLICIES:
             raise ValueError(f"llm_error_policy must be one of {self._LLM_ERROR_POLICIES}, got {llm_error_policy!r}")
         if unreviewed_policy not in self._UNREVIEWED_POLICIES:
@@ -230,6 +247,8 @@ class Pipeline:
         self.llm_pass_score = llm_pass_score
         self.llm_error_policy = llm_error_policy
         self.on_error = on_error
+        self.candidate_multiplier = candidate_multiplier
+        self.max_candidates = max_candidates
 
         # Emitted at most once per instance so a mis-calibrated threshold
         # setup is visible without flooding the logs on every query.
@@ -317,6 +336,13 @@ class Pipeline:
         # 6. Build output with optional parent context + summaries
         return self._build_output(results, original_query, ctx)
 
+    def fetch_k(self, top_k: int) -> int:
+        """Number of candidates requested from *search_fn* for a given ``top_k``."""
+        k = max(top_k, int(round(top_k * self.candidate_multiplier)))
+        if self.max_candidates is not None:
+            k = min(k, self.max_candidates)
+        return k
+
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
@@ -334,8 +360,9 @@ class Pipeline:
             except Exception as exc:
                 self._report_error("store_query_fn", exc, f"query={query[:60]!r}")
 
-        # Search
-        candidates: List[Scored] = self.search_fn(embedding, top_k) or []
+        # Search — fetch a pool larger than top_k so the later stages have
+        # something to re-rank; the final list is sliced back to top_k.
+        candidates: List[Scored] = self.search_fn(embedding, self.fetch_k(top_k)) or []
         if not candidates:
             return []
 

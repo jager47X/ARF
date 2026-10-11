@@ -370,6 +370,50 @@ def test_invalid_llm_mode_and_pass_score_raise():
 
 
 # ---------------------------------------------------------------------------
+# Candidate pool size
+# ---------------------------------------------------------------------------
+
+
+def _recording_search(requested):
+    """search_fn that records the k it was asked for and returns k good docs."""
+
+    def search_fn(embedding, k):
+        requested.append(k)
+        return [({"_id": str(i), "title": f"Doc {i}", "text": "..."}, 0.95 - i * 0.001) for i in range(k)]
+
+    return search_fn
+
+
+def test_search_fetches_three_times_top_k_by_default():
+    requested = []
+    pipeline = Pipeline(search_fn=_recording_search(requested), embed_fn=_mock_embed)
+    results = pipeline.run("q")  # top_k defaults to 10
+    assert requested == [30]
+    assert len(results) == 10  # still sliced back to top_k
+
+
+def test_candidate_multiplier_and_cap_are_configurable():
+    requested = []
+    search_fn = _recording_search(requested)
+
+    Pipeline(search_fn=search_fn, embed_fn=_mock_embed, candidate_multiplier=4).run("q", top_k=5)
+    Pipeline(search_fn=search_fn, embed_fn=_mock_embed, max_candidates=12).run("q", top_k=10)
+    Pipeline(search_fn=search_fn, embed_fn=_mock_embed, candidate_multiplier=1.0).run("q", top_k=7)
+    Pipeline(search_fn=search_fn, embed_fn=_mock_embed, candidate_multiplier=2.5).run("q", top_k=3)
+    assert requested == [20, 12, 7, 8]  # 3 * 2.5 = 7.5 → rounds to 8
+
+
+def test_fetch_k_helper_and_validation():
+    pipeline = Pipeline(search_fn=_mock_search, embed_fn=_mock_embed, candidate_multiplier=3.0, max_candidates=50)
+    assert pipeline.fetch_k(10) == 30
+    assert pipeline.fetch_k(20) == 50
+    with pytest.raises(ValueError, match="candidate_multiplier"):
+        Pipeline(search_fn=_mock_search, embed_fn=_mock_embed, candidate_multiplier=0.5)
+    with pytest.raises(ValueError, match="max_candidates"):
+        Pipeline(search_fn=_mock_search, embed_fn=_mock_embed, max_candidates=0)
+
+
+# ---------------------------------------------------------------------------
 # Error policy: failures stay visible and are configurable
 # ---------------------------------------------------------------------------
 
