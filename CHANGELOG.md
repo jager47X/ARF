@@ -45,6 +45,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `alias_fn` and `summarize_fn` failures no longer disappear (`arf/pipeline.py`)
 
 ### Added
+- **Query expansion / multi-query retrieval** — `Pipeline(expand_fn=(query) -> [variants],
+  max_expansions=3)` embeds and searches each variant (LLM paraphrases, HyDE, synonyms ...) and
+  keeps a document's best score across them, before triage. Failures are reported via `on_error`
+  and only ever cost the extra candidates (`arf/pipeline.py`)
 - **Cross-encoder rerank slot** — `Pipeline(rerank_fn=(query, [doc]) -> [prob], rerank_zones=(0.4, 0.6))`
   runs between the MLP and the LLM on whatever is still uncertain; accepted candidates keep their
   retrieval score and every result reports `rerank_score`. `arf.rerankers` provides
