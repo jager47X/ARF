@@ -45,6 +45,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `alias_fn` and `summarize_fn` failures no longer disappear (`arf/pipeline.py`)
 
 ### Added
+- **Cross-encoder rerank slot** — `Pipeline(rerank_fn=(query, [doc]) -> [prob], rerank_zones=(0.4, 0.6))`
+  runs between the MLP and the LLM on whatever is still uncertain; accepted candidates keep their
+  retrieval score and every result reports `rerank_score`. `arf.rerankers` provides
+  `sentence_transformers_reranker()` (lazy import, `pip install advanced-rag-framework[rerank]`),
+  `cross_encoder_rerank_fn()` for any `predict(pairs)` model, and `document_text_fn()`
+  (`arf/pipeline.py`, `arf/rerankers.py`)
 - `Pipeline(llm_error_policy="keep"|"drop", on_error=...)` — what happens to a candidate when the
   LLM call fails or its answer has no parseable score, and an observer hook for every swallowed
   error (`arf/pipeline.py`)

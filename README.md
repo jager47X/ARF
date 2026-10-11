@@ -21,7 +21,8 @@ Query
   → Vector search (your provider)
   → Threshold + gap filter (free — drops obvious junk)
   → MLP triage (free, <5ms — accept/reject/uncertain)
-  → LLM verification ($$$ — only for the ~20% uncertain candidates)
+  → Cross-encoder rerank (optional, ~ms — resolves most of the uncertain ones)
+  → LLM verification ($$$ — only for what is still uncertain)
   → Answer with summaries
 ```
 
@@ -70,6 +71,7 @@ pipeline = Pipeline(
 
     # Scoring (optional)
     predict_fn=load_reranker("model.joblib"),  # trained MLP
+    rerank_fn=my_cross_encoder,   # (query, [dict]) → [prob]   e.g. arf.rerankers
     llm_fn=my_llm_verify,         # any LLM
 
     # Matching (optional)
@@ -209,6 +211,25 @@ puts every keyword hit on the semantic scale before merging:
 Every hit then receives `keyword_boost`. Set `keyword_mode="max"` to merge raw keyword scores
 as-is (only sensible if they are already cosine-like).
 
+### Cross-encoder reranking — `rerank_fn`
+
+```python
+from arf.rerankers import sentence_transformers_reranker   # pip install advanced-rag-framework[rerank]
+
+pipeline = Pipeline(
+    ...,
+    rerank_fn=sentence_transformers_reranker(config=my_config),  # default: cross-encoder/ms-marco-MiniLM-L-6-v2
+    rerank_zones=(0.4, 0.6),   # ≥0.6 accept, <0.4 reject, between → LLM
+)
+results[0]["rerank_score"]    # probability, or None if the candidate never reached the re-ranker
+```
+
+A cross-encoder reads the query and document together and resolves most "uncertain" candidates
+for a few milliseconds each, so far fewer reach the LLM. It runs on whatever the MLP left uncertain
+(or on the whole review band if you have no MLP). Any `(query, [doc_dict, ...]) → [prob, ...]`
+callable works — Cohere Rerank, Voyage rerank, a local model — and
+`arf.rerankers.cross_encoder_rerank_fn` wraps anything with a `predict(pairs)` method.
+
 ### LLM verification — `llm_fn`
 
 ```python
@@ -341,6 +362,7 @@ Validates documents, computes hierarchy metadata (depth, path), generates embedd
 | `search_fn` | Vector search | FAISS, Pinecone, Weaviate, Qdrant, MongoDB Atlas, pgvector |
 | `embed_fn` | Embeddings | OpenAI, Voyage AI, Cohere, sentence-transformers, Ollama |
 | `predict_fn` | ML model | scikit-learn, XGBoost, PyTorch, any callable |
+| `rerank_fn` | Cross-encoder / reranker | sentence-transformers, Cohere Rerank, Voyage rerank |
 | `llm_fn` | LLM verification | OpenAI, Anthropic, Ollama, Llama.cpp, any API |
 | `keyword_fn` | Lexical / full-text search | BM25, Elasticsearch, MongoDB text index, SQL `LIKE` |
 | `alias_fn` | Alias / synonym lookup | Dict, alias table, any search |
@@ -358,6 +380,9 @@ pip install advanced-rag-framework
 
 # With MLP training support (numpy + scikit-learn)
 pip install advanced-rag-framework[ml]
+
+# With the built-in cross-encoder re-ranker (sentence-transformers)
+pip install advanced-rag-framework[rerank]
 ```
 
 ## Sample Project
@@ -399,11 +424,17 @@ The core innovation — each stage filters candidates so the next stage does les
                     │  (<5ms, $0.00)       │
                     └──────────┬───────────┘
                         ┌──────┼──────┐
-                   p≥0.6│  0.4<p<0.6  │p≤0.4
+                   p≥0.6│ 0.4≤p<0.6   │p<0.4
+                        │      │      │
+                   Accept   ┌──▼──────────┐  Reject
+                   (free)   │Cross-encoder│  (free)
+                            │ (optional)  │
+                            └──┬──────────┘
+                        ┌──────┼──────┐
+                   p≥0.6│ 0.4≤p<0.6   │p<0.4
                         │      │      │
                    Accept   ┌──▼──┐  Reject
                    (free)   │ LLM │  (free)
-                            │(20%)│
                             └──┬──┘
                           Accept/Reject
 ```

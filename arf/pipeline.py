@@ -42,6 +42,8 @@ class _RunContext:
 
     # dedupe key -> 0-9 score the LLM gave that candidate
     llm_scores: Dict[Any, int] = field(default_factory=dict)
+    # dedupe key -> probability the cross-encoder gave that candidate
+    rerank_scores: Dict[Any, float] = field(default_factory=dict)
     # dedupe key -> summary served from the cache (skips summarize_fn)
     cached_summaries: Dict[Any, str] = field(default_factory=dict)
 
@@ -85,6 +87,12 @@ class Pipeline:
         search_fn: ``(embedding, top_k) -> [(dict, float), ...]``
         embed_fn: ``(text) -> [float, ...]``
         predict_fn: ``(feature_vectors) -> [float, ...]`` (probabilities)
+        rerank_fn: ``(query, [document_dict, ...]) -> [float, ...]`` — a
+            cross-encoder (or any batch scorer) returning a relevance
+            probability in [0, 1] per document.  Runs on what the MLP left
+            uncertain (or on the whole review band without *predict_fn*),
+            before the LLM; see *rerank_zones*.  ``arf.rerankers`` builds
+            one from a sentence-transformers model.
         llm_fn: ``(query, document_dict) -> str`` — raw LLM output containing
             a 0-9 relevance score (see :mod:`arf.score_parser` for accepted
             formats).  How the score is used depends on *llm_mode*.
@@ -116,6 +124,9 @@ class Pipeline:
         parser_range: ``(min_mult, max_mult)`` for score blending
             (``llm_mode="blend"`` only).
         predict_zones: ``(low, high)`` probability zones for MLP triage.
+        rerank_zones: ``(low, high)`` probability zones for *rerank_fn*:
+            at or above *high* → accepted at the retrieval score, below
+            *low* → rejected, between → on to the LLM.
         max_rephrase: Number of rephrase-and-retry attempts.
         unreviewed_policy: What to do with candidates in the "needs review"
             band when no reviewer is left to resolve them (no *predict_fn*
@@ -212,6 +223,7 @@ class Pipeline:
         embed_fn: Callable,
         # Optional scoring
         predict_fn: Optional[Callable] = None,
+        rerank_fn: Optional[Callable] = None,
         llm_fn: Optional[Callable] = None,
         # Optional cache
         cache_lookup: Optional[Callable] = None,
@@ -233,6 +245,7 @@ class Pipeline:
         graph_max_hops: int = 3,
         parser_range: Tuple[float, float] = (0.50, 1.50),
         predict_zones: Tuple[float, float] = (0.4, 0.6),
+        rerank_zones: Tuple[float, float] = (0.4, 0.6),
         max_rephrase: int = 2,
         unreviewed_policy: str = "keep",
         keyword_mode: str = "rescore",
@@ -278,6 +291,7 @@ class Pipeline:
         self.search_fn = search_fn
         self.embed_fn = embed_fn
         self.predict_fn = predict_fn
+        self.rerank_fn = rerank_fn
         self.llm_fn = llm_fn
         self.cache_lookup = cache_lookup
         self.cache_store = cache_store
@@ -294,6 +308,7 @@ class Pipeline:
         self.graph_max_hops = graph_max_hops
         self.parser_min, self.parser_max = parser_range
         self.predict_zones = predict_zones
+        self.rerank_zones = rerank_zones
         self.max_rephrase = max_rephrase
         self.unreviewed_policy = unreviewed_policy
         self.keyword_mode = keyword_mode
@@ -333,6 +348,8 @@ class Pipeline:
           is provided)
         * ``"llm_score"`` — the 0-9 score the LLM gave this candidate, or
           ``None`` if it never reached LLM verification
+        * ``"rerank_score"`` — the probability *rerank_fn* gave this
+          candidate, or ``None`` if it never reached the re-ranker
         """
         original_query = query
         ctx = _RunContext()
@@ -483,19 +500,27 @@ class Pipeline:
                 alias_matches=alias_matches,
             )
 
+        # Cross-encoder re-ranking on what the MLP left uncertain
+        rerank_accepted: List[Scored] = []
+        uncertain: List[Scored] = mlp_uncertain
+        if self.rerank_fn is not None and uncertain:
+            rerank_accepted, uncertain = self._rerank_triage(query, uncertain, ctx)
+
         # LLM verification on uncertain candidates
         llm_verified: List[Scored] = []
         unreviewed: List[Scored] = []
-        if self.llm_fn is not None and mlp_uncertain:
-            llm_verified = self._llm_verify(query, mlp_uncertain, ctx)
-        elif mlp_uncertain and self.unreviewed_policy == "keep":
+        if self.llm_fn is not None and uncertain:
+            llm_verified = self._llm_verify(query, uncertain, ctx)
+        elif uncertain and self.unreviewed_policy == "keep":
             # Nothing left to review these — keep them at their retrieval
             # score rather than silently discarding the whole grey zone.
-            unreviewed = mlp_uncertain
+            unreviewed = uncertain
             logger.debug("Keeping %d unreviewed candidate(s) (no reviewer configured)", len(unreviewed))
 
         # Merge all accepted
-        merged = self.triage.dedupe(result.accepted, mlp_accepted, llm_verified, unreviewed, key_fn=self._key_fn)
+        merged = self.triage.dedupe(
+            result.accepted, mlp_accepted, rerank_accepted, llm_verified, unreviewed, key_fn=self._key_fn
+        )
 
         # Gap filter — always on retrieval scores, so a blended LLM boost can
         # neither evict the other candidates nor rescue a far-off one.
@@ -606,6 +631,28 @@ class Pipeline:
             self._report_error("predict_fn", exc, f"{len(candidates)} candidate(s) sent on unscored")
             return [], candidates
 
+    def _rerank_triage(
+        self, query: str, candidates: List[Scored], ctx: _RunContext
+    ) -> Tuple[List[Scored], List[Scored]]:
+        """Score candidates with *rerank_fn* in one batch; return (accepted, uncertain).
+
+        Accepted candidates keep their retrieval score (the probability is
+        reported as ``rerank_score``); confident rejects are dropped.  A
+        failing re-ranker is reported and every candidate is passed on
+        unscored, exactly like a failing MLP.
+        """
+        try:
+            probs = [float(p) for p in self.rerank_fn(query, [item for item, _score in candidates])]
+            if len(probs) != len(candidates):
+                raise ValueError(f"rerank_fn returned {len(probs)} scores for {len(candidates)} candidates")
+            for (item, _score), prob in zip(candidates, probs):
+                ctx.rerank_scores[self._key_fn(item)] = prob
+            routed = self.triage.by_zones(candidates, probs, zones=self.rerank_zones)
+            return routed.accepted, routed.needs_review
+        except Exception as exc:
+            self._report_error("rerank_fn", exc, f"{len(candidates)} candidate(s) sent on unscored")
+            return [], candidates
+
     def _llm_verify(self, query: str, candidates: List[Scored], ctx: _RunContext) -> List[Scored]:
         """Run LLM verification and apply *llm_mode* (gate or blend).
 
@@ -681,15 +728,18 @@ class Pipeline:
     ) -> List[Dict[str, Any]]:
         """Convert scored tuples to rich output dicts."""
         llm_scores = ctx.llm_scores if ctx is not None else {}
+        rerank_scores = ctx.rerank_scores if ctx is not None else {}
         cached_summaries = ctx.cached_summaries if ctx is not None else {}
         output: List[Dict[str, Any]] = []
         for item, score in results:
             doc = Document.from_dict(item, self.doc_config) if isinstance(item, dict) else item
+            key = self._key_fn(item)
 
             entry: Dict[str, Any] = {
                 "document": doc,
                 "score": score,
-                "llm_score": llm_scores.get(self._key_fn(item)),
+                "llm_score": llm_scores.get(key),
+                "rerank_score": rerank_scores.get(key),
             }
 
             # Resolve parent chain
@@ -802,6 +852,7 @@ class Pipeline:
                 "item": item,
                 "score": float(score),
                 "llm_score": entry.get("llm_score"),
+                "rerank_score": entry.get("rerank_score"),
                 "summary": entry.get("summary") or "",
             }
             for (item, score), entry in zip(results, output)
@@ -839,6 +890,8 @@ class Pipeline:
             key = self._key_fn(item)
             if entry.get("llm_score") is not None:
                 ctx.llm_scores[key] = int(entry["llm_score"])
+            if entry.get("rerank_score") is not None:
+                ctx.rerank_scores[key] = float(entry["rerank_score"])
             if entry.get("summary"):
                 ctx.cached_summaries[key] = entry["summary"]
         return self._build_output(results, query, ctx)

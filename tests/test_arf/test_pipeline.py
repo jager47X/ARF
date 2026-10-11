@@ -406,6 +406,100 @@ def test_llm_verification_is_sequential_by_default():
     assert errors == [("llm_fn", "BrokenBarrierError")] * 4  # reported from the calling thread, in order
 
 
+# ---------------------------------------------------------------------------
+# Cross-encoder rerank slot (between the MLP and the LLM)
+# ---------------------------------------------------------------------------
+
+
+def _three_uncertain_docs(embedding, top_k):
+    return [({"_id": str(i), "title": f"Doc {i}", "text": "..."}, 0.80 - i * 0.01) for i in range(3)]
+
+
+def test_rerank_routes_by_zones_and_reports_scores():
+    def rerank_fn(query, items):
+        return [0.9, 0.5, 0.1]  # accept / uncertain / reject
+
+    kept = Pipeline(search_fn=_three_uncertain_docs, embed_fn=_mock_embed, rerank_fn=rerank_fn)
+    results = kept.run("q")
+    assert [(r["document"].id, r["score"], r["rerank_score"]) for r in results] == [("0", 0.80, 0.9), ("1", 0.79, 0.5)]
+
+    dropped = Pipeline(
+        search_fn=_three_uncertain_docs, embed_fn=_mock_embed, rerank_fn=rerank_fn, unreviewed_policy="drop"
+    )
+    assert [r["document"].id for r in dropped.run("q")] == ["0"]
+
+
+def test_rerank_uncertain_candidates_go_to_the_llm():
+    seen_by_llm = []
+
+    def llm_fn(query, item):
+        seen_by_llm.append(item["_id"])
+        return "Score: 8"
+
+    pipeline = Pipeline(
+        search_fn=_three_uncertain_docs, embed_fn=_mock_embed, rerank_fn=lambda q, items: [0.9, 0.5, 0.1], llm_fn=llm_fn
+    )
+    results = pipeline.run("q")
+    assert seen_by_llm == ["1"]  # only the uncertain one costs an LLM call
+    assert [(r["document"].id, r["llm_score"]) for r in results] == [("0", None), ("1", 8)]
+
+
+def test_rerank_only_sees_what_the_mlp_left_uncertain():
+    seen_by_reranker = []
+
+    def rerank_fn(query, items):
+        seen_by_reranker.extend(item["_id"] for item in items)
+        return [0.9] * len(items)
+
+    pipeline = Pipeline(
+        search_fn=_three_uncertain_docs,
+        embed_fn=_mock_embed,
+        predict_fn=lambda vectors: [0.9, 0.5, 0.1],
+        rerank_fn=rerank_fn,
+    )
+    results = pipeline.run("q")
+    assert seen_by_reranker == ["1"]
+    assert [r["document"].id for r in results] == ["0", "1"]
+    assert results[0]["rerank_score"] is None and results[1]["rerank_score"] == 0.9
+
+
+def test_rerank_zones_are_configurable():
+    pipeline = Pipeline(
+        search_fn=_three_uncertain_docs,
+        embed_fn=_mock_embed,
+        rerank_fn=lambda q, items: [0.9, 0.5, 0.1],
+        rerank_zones=(0.05, 0.95),
+        unreviewed_policy="drop",
+    )
+    assert [r["document"].id for r in pipeline.run("q")] == []  # nothing reaches 0.95; 0.1 is now uncertain
+
+
+def test_rerank_failure_or_bad_length_is_reported_and_passes_candidates_on():
+    errors = []
+
+    def broken(query, items):
+        raise RuntimeError("model not loaded")
+
+    pipeline = Pipeline(
+        search_fn=_three_uncertain_docs,
+        embed_fn=_mock_embed,
+        rerank_fn=broken,
+        llm_fn=_llm_saying({"0": 9, "1": 9, "2": 9}),
+        on_error=lambda stage, exc: errors.append((stage, str(exc))),
+    )
+    assert [r["document"].id for r in pipeline.run("q")] == ["0", "1", "2"]  # all went on to the LLM
+    assert errors == [("rerank_fn", "model not loaded")]
+
+    short = Pipeline(
+        search_fn=_three_uncertain_docs,
+        embed_fn=_mock_embed,
+        rerank_fn=lambda q, items: [0.9],
+        on_error=lambda stage, exc: errors.append((stage, str(exc))),
+    )
+    assert len(short.run("q")) == 3  # kept by the unreviewed policy
+    assert errors[-1][0] == "rerank_fn" and "returned 1 scores for 3" in errors[-1][1]
+
+
 def test_invalid_llm_workers_raises():
     with pytest.raises(ValueError, match="llm_workers"):
         Pipeline(search_fn=_mock_search, embed_fn=_mock_embed, llm_workers=0)
