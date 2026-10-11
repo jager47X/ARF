@@ -26,7 +26,9 @@ Query
   → Answer with summaries
 ```
 
-Each stage filters candidates so the next stage does less work. Only the uncertain ~20% ever reach the LLM.
+Each stage filters candidates so the next stage does less work; typically only the uncertain ~20%
+ever reach the LLM — and `pipeline.stats.summary()["llm_share_of_candidates"]` tells you the real
+number on your traffic (see [Stats & evaluation](#stats--evaluation)).
 
 ## Quick Start
 
@@ -373,6 +375,44 @@ result = ingest_documents(
 ```
 
 Validates documents, computes hierarchy metadata (depth, path), generates embeddings for parent and children, and stores via your function.
+
+## Stats & evaluation
+
+Every run records what each stage did; nothing is estimated.
+
+```python
+results = pipeline.run("what is due process?")
+
+s = pipeline.last_stats          # arf.RunStats for this query
+s.fetched, s.accepted_direct, s.needs_review, s.rejected      # triage funnel
+s.mlp_evaluated, s.rerank_evaluated, s.llm_evaluated           # who did the work
+s.cache_hit, s.errors, s.timings_ms                            # {"embed": 12.1, "search": 30.4, "llm": 410.2, "total": ...}
+
+pipeline.stats.summary()         # aggregate over all runs of this instance
+# {"runs": 1203, "cache_hit_rate": 0.31, "llm_share_of_candidates": 0.18,
+#  "llm_calls_per_query": 1.4, "llm_calls_avoided": 5120, "avg_latency_ms": 212.0,
+#  "funnel": {...}, "avg_stage_ms": {...}, "errors_by_stage": {...}}
+pipeline.stats.recent(20)        # the last 20 RunStats
+Pipeline(..., stats_fn=export)   # (RunStats) -> None, called after every run
+```
+
+To measure quality **and** cost on a labelled set in one go:
+
+```python
+from arf.evaluation import evaluate
+
+dataset = [
+    {"query": "what is due process?", "relevant": ["usc-14-1", "usc-5"]},
+    {"query": "quartering soldiers",   "relevant": {"usc-3": 3, "usc-4": 1}},   # graded
+]
+report = evaluate(pipeline, dataset, ks=(1, 5, 10))
+report.metrics          # {"mrr": 0.83, "recall@5": 0.91, "ndcg@10": 0.88, ...}
+report.stats            # pipeline.stats-style summary over the evaluation runs
+print(report.markdown())
+```
+
+`arf.evaluation` also exposes `recall_at_k`, `precision_at_k`, `hit_rate_at_k`, `reciprocal_rank`
+and `ndcg_at_k` for your own harness. Pure Python, no dependencies.
 
 ## Bring Your Own Everything
 

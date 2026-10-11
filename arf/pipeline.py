@@ -25,6 +25,7 @@ from arf.document import Document, DocumentConfig
 from arf.features import CorpusStats, FeatureExtractor, cosine_similarity
 from arf.query_graph import follow_rephrase_chain, normalize_query
 from arf.score_parser import extract_score, multiplier
+from arf.stats import PipelineStats, RunStats
 from arf.triage import Triage
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,8 @@ class _RunContext:
     rerank_scores: Dict[Any, float] = field(default_factory=dict)
     # dedupe key -> summary served from the cache (skips summarize_fn)
     cached_summaries: Dict[Any, str] = field(default_factory=dict)
+    # what every stage did, exposed as Pipeline.last_stats afterwards
+    stats: RunStats = field(default_factory=RunStats)
 
 
 def _make_key_fn(config: DocumentConfig) -> Callable[[Any], Any]:
@@ -205,6 +208,13 @@ class Pipeline:
             serves that neighbour's results (semantic cache).  The embedding
             is reused for the vector search when it is a miss.
         cache_similarity_threshold: Minimum similarity for a semantic hit.
+        stats_fn: ``(RunStats) -> None`` — called after every run with that
+            run's :class:`~arf.stats.RunStats` (e.g. to export metrics).
+            The same object is available as :attr:`last_stats`, and all
+            runs accumulate in :attr:`stats` (a
+            :class:`~arf.stats.PipelineStats`).
+        keep_recent_stats: How many recent :class:`~arf.stats.RunStats`
+            :attr:`stats` keeps for ``stats.recent()``.
 
     Note:
         An entry is a hit only if it was stored for a ``top_k`` at least as
@@ -273,6 +283,8 @@ class Pipeline:
         cache_version: Optional[str] = None,
         cache_nearest_fn: Optional[Callable] = None,
         cache_similarity_threshold: float = 0.95,
+        stats_fn: Optional[Callable[[RunStats], None]] = None,
+        keep_recent_stats: int = 100,
     ):
         if cache_ttl is not None and cache_ttl <= 0:
             raise ValueError(f"cache_ttl must be > 0 seconds or None, got {cache_ttl!r}")
@@ -340,6 +352,12 @@ class Pipeline:
         self.cache_version = cache_version
         self.cache_nearest_fn = cache_nearest_fn
         self.cache_similarity_threshold = cache_similarity_threshold
+        self.stats_fn = stats_fn
+
+        #: Aggregate statistics over every run of this instance.
+        self.stats = PipelineStats(keep_recent=keep_recent_stats)
+        #: Statistics of the most recent run (``None`` before the first).
+        self.last_stats: Optional[RunStats] = None
 
         # Emitted at most once per instance so a mis-calibrated threshold
         # setup is visible without flooding the logs on every query.
@@ -364,15 +382,41 @@ class Pipeline:
           ``None`` if it never reached LLM verification
         * ``"rerank_score"`` — the probability *rerank_fn* gave this
           candidate, or ``None`` if it never reached the re-ranker
+
+        Afterwards :attr:`last_stats` holds this run's
+        :class:`~arf.stats.RunStats` and :attr:`stats` has absorbed it.
         """
+        ctx = _RunContext(stats=RunStats(query=query, top_k=top_k))
+        started = time.perf_counter()
+        output: List[Dict[str, Any]] = []
+        try:
+            output = self._run(query, top_k, ctx)
+            return output
+        finally:
+            self._finish_run(ctx, output, started)
+
+    def _finish_run(self, ctx: _RunContext, output: List[Dict[str, Any]], started: float) -> None:
+        stats = ctx.stats
+        stats.returned = len(output)
+        stats.timings_ms["total"] = round((time.perf_counter() - started) * 1000.0, 3)
+        self.last_stats = stats
+        self.stats.record(stats)
+        if self.stats_fn is not None:
+            try:
+                self.stats_fn(stats)
+            except Exception as exc:  # an observer must never break the query
+                logger.warning("stats_fn raised: %s: %s", type(exc).__name__, exc)
+
+    def _run(self, query: str, top_k: int, ctx: _RunContext) -> List[Dict[str, Any]]:
+        stats = ctx.stats
         original_query = query
-        ctx = _RunContext()
 
         # 1. Moderation
         if self.moderate_fn is not None:
             safe = self.moderate_fn(query)
             if not safe:
                 logger.info("Query blocked by moderation: %r", query[:80])
+                stats.blocked = True
                 return []
 
         # 2. Preprocessing
@@ -384,23 +428,30 @@ class Pipeline:
         # (see _validating_lookup) so it keeps following rephrase edges.
         embedding: Any = None
         if self.cache_lookup is not None:
-            lookup = self._validating_lookup(top_k)
-            chain = follow_rephrase_chain(
-                query,
-                lookup_fn=lookup,
-                normalize_fn=self.cache_normalize_fn,
-                max_hops=self.graph_max_hops,
-            )
+            lookup = self._validating_lookup(top_k, ctx)
+            with stats.timer("cache"):
+                chain = follow_rephrase_chain(
+                    query,
+                    lookup_fn=lookup,
+                    normalize_fn=self.cache_normalize_fn,
+                    max_hops=self.graph_max_hops,
+                )
             if chain.hit:
                 logger.info("Cache hit for %r (hops=%d)", query[:60], chain.hops)
-                return self._results_from_cache(chain.cached_results, original_query, top_k)
+                stats.cache_hit = True
+                stats.cache_hops = chain.hops
+                return self._results_from_cache(chain.cached_results, original_query, top_k, ctx)
             if chain.final_text != query:
                 query = chain.final_text
             elif self.cache_nearest_fn is not None:
-                embedding = self.embed_fn(query)
-                cached = self._semantic_cache_lookup(query, embedding, lookup)
+                with stats.timer("embed"):
+                    embedding = self.embed_fn(query)
+                with stats.timer("cache"):
+                    cached = self._semantic_cache_lookup(query, embedding, lookup, ctx)
                 if cached is not None:
-                    return self._results_from_cache(cached, original_query, top_k)
+                    stats.cache_hit = True
+                    stats.semantic_cache_hit = True
+                    return self._results_from_cache(cached, original_query, top_k, ctx)
 
         # 4. Search loop (with rephrase retry)
         previous_attempts: List[str] = []
@@ -416,13 +467,14 @@ class Pipeline:
             rephrased = self.rephrase_fn(query, previous_attempts)
             if not rephrased or rephrased == query:
                 break
+            stats.rephrase_attempts += 1
 
             # Link rephrase in graph (normalised, like every other cache key)
             if self.link_fn is not None:
                 try:
                     self.link_fn(self.cache_normalize_fn(query), self.cache_normalize_fn(rephrased))
                 except Exception as exc:
-                    self._report_error("link_fn", exc, f"{query[:40]!r} -> {rephrased[:40]!r}")
+                    self._report_error("link_fn", exc, f"{query[:40]!r} -> {rephrased[:40]!r}", ctx)
 
             previous_attempts.append(query)
             query = rephrased
@@ -431,14 +483,15 @@ class Pipeline:
             return []
 
         # 5. Build output with optional parent context + summaries
-        output = self._build_output(results, original_query, ctx)
+        with stats.timer("output"):
+            output = self._build_output(results, original_query, ctx)
 
         # 6. Cache store — after the summaries, so a later hit is really free
         if self.cache_store is not None:
             try:
                 self.cache_store(self.cache_normalize_fn(query), self._cache_payload(results, output, top_k))
             except Exception as exc:
-                self._report_error("cache_store", exc, f"query={query[:60]!r}")
+                self._report_error("cache_store", exc, f"query={query[:60]!r}", ctx)
 
         return output
 
@@ -462,25 +515,29 @@ class Pipeline:
         exact query text (e.g. for the semantic cache lookup).
         """
         ctx = ctx if ctx is not None else _RunContext()
+        stats = ctx.stats
+
         # Embed
         if embedding is None:
-            embedding = self.embed_fn(query)
+            with stats.timer("embed"):
+                embedding = self.embed_fn(query)
 
         # Store query embedding
         if self.store_query_fn is not None:
             try:
                 self.store_query_fn(query, {"embedding": embedding})
             except Exception as exc:
-                self._report_error("store_query_fn", exc, f"query={query[:60]!r}")
+                self._report_error("store_query_fn", exc, f"query={query[:60]!r}", ctx)
 
         # Search — fetch a pool larger than top_k so the later stages have
         # something to re-rank; the final list is sliced back to top_k.
         fetch_k = self.fetch_k(top_k)
-        candidates: List[Scored] = self.search_fn(embedding, fetch_k) or []
+        with stats.timer("search"):
+            candidates: List[Scored] = self.search_fn(embedding, fetch_k) or []
 
-        # Multi-query expansion: search each variant too, best score per doc wins
-        if self.expand_fn is not None and self.max_expansions > 0:
-            candidates = self._expand_and_search(query, candidates, fetch_k)
+            # Multi-query expansion: search each variant too, best score per doc wins
+            if self.expand_fn is not None and self.max_expansions > 0:
+                candidates = self._expand_and_search(query, candidates, fetch_k, ctx)
 
         if not candidates:
             return []
@@ -488,8 +545,10 @@ class Pipeline:
         # Keyword merge
         keyword_matches: List[str] = []
         if self.keyword_fn is not None:
-            kw_results = self.keyword_fn(query) or []
+            with stats.timer("keyword"):
+                kw_results = self.keyword_fn(query) or []
             if kw_results:
+                stats.keyword_hits += len(kw_results)
                 candidates = self._merge_keyword_hits(candidates, kw_results, embedding)
                 keyword_matches = [t for t in (self._title_of(item) for item, _ in kw_results) if t]
 
@@ -499,10 +558,15 @@ class Pipeline:
             try:
                 alias_matches = list(self.alias_fn(query) or [])
             except Exception as exc:
-                self._report_error("alias_fn", exc, f"query={query[:60]!r}")
+                self._report_error("alias_fn", exc, f"query={query[:60]!r}", ctx)
+
+        stats.fetched += len(candidates)
 
         # Triage — split into accept / needs_review / reject
         result = self.triage.classify(candidates)
+        stats.accepted_direct += len(result.accepted)
+        stats.needs_review += len(result.needs_review)
+        stats.rejected += len(result.rejected)
         if not result.accepted and not result.needs_review:
             self._warn_all_rejected(candidates)
 
@@ -511,30 +575,43 @@ class Pipeline:
         mlp_uncertain: List[Scored] = result.needs_review
 
         if self.predict_fn is not None and result.needs_review:
-            mlp_accepted, mlp_uncertain = self._mlp_triage(
-                query,
-                result.needs_review,
-                embedding,
-                top_score=max(float(score) for _item, score in candidates),
-                keyword_matches=keyword_matches,
-                alias_matches=alias_matches,
-            )
+            with stats.timer("mlp"):
+                mlp_accepted, mlp_uncertain = self._mlp_triage(
+                    query,
+                    result.needs_review,
+                    embedding,
+                    top_score=max(float(score) for _item, score in candidates),
+                    keyword_matches=keyword_matches,
+                    alias_matches=alias_matches,
+                    ctx=ctx,
+                )
+            stats.mlp_evaluated += len(result.needs_review)
+            stats.mlp_accepted += len(mlp_accepted)
+            stats.mlp_rejected += len(result.needs_review) - len(mlp_accepted) - len(mlp_uncertain)
 
         # Cross-encoder re-ranking on what the MLP left uncertain
         rerank_accepted: List[Scored] = []
         uncertain: List[Scored] = mlp_uncertain
         if self.rerank_fn is not None and uncertain:
-            rerank_accepted, uncertain = self._rerank_triage(query, uncertain, ctx)
+            n_uncertain = len(uncertain)
+            with stats.timer("rerank"):
+                rerank_accepted, uncertain = self._rerank_triage(query, uncertain, ctx)
+            stats.rerank_evaluated += n_uncertain
+            stats.rerank_accepted += len(rerank_accepted)
+            stats.rerank_rejected += n_uncertain - len(rerank_accepted) - len(uncertain)
 
         # LLM verification on uncertain candidates
         llm_verified: List[Scored] = []
         unreviewed: List[Scored] = []
         if self.llm_fn is not None and uncertain:
-            llm_verified = self._llm_verify(query, uncertain, ctx)
+            stats.llm_evaluated += len(uncertain)
+            with stats.timer("llm"):
+                llm_verified = self._llm_verify(query, uncertain, ctx)
         elif uncertain and self.unreviewed_policy == "keep":
             # Nothing left to review these — keep them at their retrieval
             # score rather than silently discarding the whole grey zone.
             unreviewed = uncertain
+            stats.unreviewed_kept += len(unreviewed)
             logger.debug("Keeping %d unreviewed candidate(s) (no reviewer configured)", len(unreviewed))
 
         # Merge all accepted
@@ -546,9 +623,11 @@ class Pipeline:
         # neither evict the other candidates nor rescue a far-off one.
         if merged:
             retrieval_scores = {self._key_fn(item): float(score) for item, score in candidates}
+            before = len(merged)
             merged = self._gap_filter_on_retrieval(merged, retrieval_scores)
+            stats.gap_dropped += before - len(merged)
 
-        return merged[: top_k]
+        return merged[:top_k]
 
     def _gap_filter_on_retrieval(self, merged: List[Scored], retrieval_scores: Dict[Any, float]) -> List[Scored]:
         def retrieval(c: Scored) -> float:
@@ -557,7 +636,9 @@ class Pipeline:
         top = max(retrieval(c) for c in merged)
         return [c for c in merged if top - retrieval(c) <= self.triage.gap]
 
-    def _expand_and_search(self, query: str, candidates: List[Scored], fetch_k: int) -> List[Scored]:
+    def _expand_and_search(
+        self, query: str, candidates: List[Scored], fetch_k: int, ctx: Optional[_RunContext] = None
+    ) -> List[Scored]:
         """Search every *expand_fn* variant and merge on the semantic scale.
 
         All variants are embedded with the same model, so their cosine
@@ -568,7 +649,7 @@ class Pipeline:
         try:
             variants = list(self.expand_fn(query) or [])
         except Exception as exc:
-            self._report_error("expand_fn", exc, f"query={query[:60]!r}")
+            self._report_error("expand_fn", exc, f"query={query[:60]!r}", ctx)
             return candidates
 
         seen = {self.cache_normalize_fn(query)}
@@ -586,12 +667,14 @@ class Pipeline:
             try:
                 extra = self.search_fn(self.embed_fn(text), fetch_k) or []
             except Exception as exc:
-                self._report_error("expand_fn search", exc, f"variant={text[:60]!r}")
+                self._report_error("expand_fn search", exc, f"variant={text[:60]!r}", ctx)
                 continue
             if extra:
                 merged = self.triage.dedupe(merged, extra, key_fn=self._key_fn)
         if used:
             logger.debug("Expanded %r with %d variant(s) -> %d candidates", query[:40], used, len(merged))
+            if ctx is not None:
+                ctx.stats.expansions += used
         return merged
 
     def _merge_keyword_hits(
@@ -663,6 +746,7 @@ class Pipeline:
         top_score: Optional[float] = None,
         keyword_matches: Optional[List[str]] = None,
         alias_matches: Optional[List[Any]] = None,
+        ctx: Optional[_RunContext] = None,
     ) -> Tuple[List[Scored], List[Scored]]:
         """Run MLP on candidates, return (accepted, uncertain).
 
@@ -685,7 +769,7 @@ class Pipeline:
             routed = self.triage.by_zones(candidates, probs, zones=self.predict_zones)
             return routed.accepted, routed.needs_review
         except Exception as exc:
-            self._report_error("predict_fn", exc, f"{len(candidates)} candidate(s) sent on unscored")
+            self._report_error("predict_fn", exc, f"{len(candidates)} candidate(s) sent on unscored", ctx)
             return [], candidates
 
     def _rerank_triage(
@@ -707,7 +791,7 @@ class Pipeline:
             routed = self.triage.by_zones(candidates, probs, zones=self.rerank_zones)
             return routed.accepted, routed.needs_review
         except Exception as exc:
-            self._report_error("rerank_fn", exc, f"{len(candidates)} candidate(s) sent on unscored")
+            self._report_error("rerank_fn", exc, f"{len(candidates)} candidate(s) sent on unscored", ctx)
             return [], candidates
 
     def _llm_verify(self, query: str, candidates: List[Scored], ctx: _RunContext) -> List[Scored]:
@@ -720,24 +804,30 @@ class Pipeline:
         outputs = self._call_llm_all(query, candidates)
         for (item, base_score), raw_output in zip(candidates, outputs):
             if isinstance(raw_output, Exception):
-                self._report_error("llm_fn", raw_output, f"query={query[:40]!r}")
+                ctx.stats.llm_errors += 1
+                self._report_error("llm_fn", raw_output, f"query={query[:40]!r}", ctx)
                 self._apply_llm_error_policy(item, base_score, verified)
                 continue
             try:
                 llm_score = extract_score(raw_output)
             except ValueError as exc:
-                self._report_error("llm_fn output parsing", exc, f"output={str(raw_output)[:60]!r}")
+                ctx.stats.llm_errors += 1
+                self._report_error("llm_fn output parsing", exc, f"output={str(raw_output)[:60]!r}", ctx)
                 self._apply_llm_error_policy(item, base_score, verified)
                 continue
 
             ctx.llm_scores[self._key_fn(item)] = llm_score
             if self.llm_mode == "gate":
-                if llm_score >= self.llm_pass_score:
+                passed = llm_score >= self.llm_pass_score
+                if passed:
                     verified.append((item, base_score))
             else:
                 adj = min(base_score * multiplier(llm_score, min_mult=self.parser_min, max_mult=self.parser_max), 1.0)
-                if adj >= self.triage.accept_threshold:
+                passed = adj >= self.triage.accept_threshold
+                if passed:
                     verified.append((item, adj))
+            if passed:
+                ctx.stats.llm_accepted += 1
         return verified
 
     def _call_llm_all(self, query: str, candidates: List[Scored]) -> List[Any]:
@@ -764,16 +854,18 @@ class Pipeline:
         if self.llm_error_policy == "keep":
             verified.append((item, base_score))
 
-    def _report_error(self, stage: str, exc: Exception, detail: str = "") -> None:
+    def _report_error(self, stage: str, exc: Exception, detail: str = "", ctx: Optional[_RunContext] = None) -> None:
         """Log a swallowed error at WARNING and forward it to *on_error*.
 
         The pipeline degrades gracefully when an optional stage fails, but
         the failure must stay visible: a dead cache or LLM endpoint should
-        show up in logs (and in metrics via *on_error*), not as silently
-        thinner results.
+        show up in logs, in the run's stats and in metrics via *on_error*,
+        not as silently thinner results.
         """
         suffix = f" ({detail})" if detail else ""
         logger.warning("%s failed%s: %s: %s", stage, suffix, type(exc).__name__, exc)
+        if ctx is not None:
+            ctx.stats.errors.append(stage)
         if self.on_error is not None:
             try:
                 self.on_error(stage, exc)
@@ -813,7 +905,7 @@ class Pipeline:
                 try:
                     entry["summary"] = self.summarize_fn(query, doc, entry["context"])
                 except Exception as exc:
-                    self._report_error("summarize_fn", exc, f"doc={doc.id!r}")
+                    self._report_error("summarize_fn", exc, f"doc={doc.id!r}", ctx)
                     entry["summary"] = ""
             else:
                 entry["summary"] = ""
@@ -845,7 +937,7 @@ class Pipeline:
     # Cache helpers
     # ------------------------------------------------------------------
 
-    def _validating_lookup(self, top_k: int) -> Callable[[str], Optional[dict]]:
+    def _validating_lookup(self, top_k: int, ctx: Optional[_RunContext] = None) -> Callable[[str], Optional[dict]]:
         """Wrap *cache_lookup* so stale or mismatched entries read as "no results".
 
         The rephrase walk then keeps following ``"next"`` edges instead of
@@ -857,7 +949,7 @@ class Pipeline:
             try:
                 node = self.cache_lookup(norm_text)
             except Exception as exc:
-                self._report_error("cache_lookup", exc, f"key={norm_text[:60]!r}")
+                self._report_error("cache_lookup", exc, f"key={norm_text[:60]!r}", ctx)
                 return None
             if node and node.get("results") and not self._cache_entry_valid(node["results"], top_k):
                 node = {**node, "results": None}
@@ -882,12 +974,18 @@ class Pipeline:
         # Legacy bare list (pre-0.3.0): no metadata, so it cannot satisfy a TTL or version check.
         return self.cache_ttl is None and self.cache_version is None
 
-    def _semantic_cache_lookup(self, query: str, embedding: Any, lookup: Callable[[str], Optional[dict]]) -> Any:
+    def _semantic_cache_lookup(
+        self,
+        query: str,
+        embedding: Any,
+        lookup: Callable[[str], Optional[dict]],
+        ctx: Optional[_RunContext] = None,
+    ) -> Any:
         """Serve the nearest cached query's results if it is similar enough."""
         try:
             nearest = self.cache_nearest_fn(embedding)
         except Exception as exc:
-            self._report_error("cache_nearest_fn", exc, f"query={query[:60]!r}")
+            self._report_error("cache_nearest_fn", exc, f"query={query[:60]!r}", ctx)
             return None
         if not nearest:
             return None
@@ -937,9 +1035,11 @@ class Pipeline:
                 entries.append({"item": item, "score": 1.0})
         return entries
 
-    def _results_from_cache(self, cached: Any, query: str, top_k: int) -> List[Dict[str, Any]]:
+    def _results_from_cache(
+        self, cached: Any, query: str, top_k: int, ctx: Optional[_RunContext] = None
+    ) -> List[Dict[str, Any]]:
         """Build output dicts from a cache entry without re-running any LLM stage."""
-        ctx = _RunContext()
+        ctx = ctx if ctx is not None else _RunContext()
         results: List[Scored] = []
         for entry in self._cache_entries(cached)[:top_k]:
             item = entry["item"]

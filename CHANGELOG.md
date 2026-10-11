@@ -45,6 +45,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `alias_fn` and `summarize_fn` failures no longer disappear (`arf/pipeline.py`)
 
 ### Added
+- **Per-run and aggregate statistics** — `pipeline.last_stats` (`arf.RunStats`: funnel counts per
+  stage, cache hit, errors, per-stage timings) and `pipeline.stats` (`arf.PipelineStats`:
+  `summary()` with `llm_share_of_candidates`, `llm_calls_per_query`, `cache_hit_rate`,
+  `avg_stage_ms`, `errors_by_stage`; `recent()`; `reset()`), plus `Pipeline(stats_fn=...)`
+  (`arf/stats.py`, `arf/pipeline.py`)
+- **Evaluation module** — `arf.evaluation.evaluate(pipeline, dataset)` reports recall@k,
+  precision@k, hit-rate@k, MRR and nDCG@k together with the pipeline's cost statistics;
+  the metric functions are public and pure Python (`arf/evaluation.py`)
+- Coverage gate raised from 10% (over `arf` + `rag_dependencies`) to 85% over `arf` alone
+  (`pyproject.toml`)
 - **Query expansion / multi-query retrieval** — `Pipeline(expand_fn=(query) -> [variants],
   max_expansions=3)` embeds and searches each variant (LLM paraphrases, HyDE, synonyms ...) and
   keeps a document's best score across them, before triage. Failures are reported via `on_error`

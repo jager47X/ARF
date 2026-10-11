@@ -26,10 +26,13 @@ from arf.ingest import IngestResult, ingest_documents
 from arf.pipeline import Pipeline
 from arf.query_graph import ChainResult, follow_rephrase_chain
 from arf.score_parser import adjust_score, adjust_scores, extract_score, multiplier
+from arf.stats import PipelineStats, RunStats
 from arf.triage import Triage, TriageResult
 
 # trainer imports are lazy — they require numpy + sklearn
 # Use: from arf.trainer import train_reranker, load_reranker
+# Evaluation helpers live in arf.evaluation (pure Python):
+# from arf.evaluation import evaluate, recall_at_k, ndcg_at_k, ...
 
 __all__ = [
     # Document model
@@ -51,6 +54,9 @@ __all__ = [
     "adjust_scores",
     # Pipeline
     "Pipeline",
+    # Stats
+    "RunStats",
+    "PipelineStats",
     # Ingest
     "ingest_documents",
     "IngestResult",
