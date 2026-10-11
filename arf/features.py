@@ -180,29 +180,17 @@ def _has_nested(document: dict, field_mapping: Optional[dict] = None) -> bool:
     return False
 
 
-def _section_depth(document: dict, field_mapping: Optional[dict] = None) -> int:
-    depth = 0
-    for fld in _HIERARCHY_FIELDS:
-        if field_mapping:
-            mapped = field_mapping.get(fld)
-            if mapped is None:
-                continue
-            actual_field = mapped if isinstance(mapped, str) else fld
-        else:
-            actual_field = fld
-        val = document.get(actual_field)
-        if val is not None and val != "":
-            depth += 1
-    return depth
+def _section_depth(document: dict, hierarchy: List[str]) -> int:
+    return sum(1 for fld in hierarchy if document.get(fld) not in (None, ""))
 
 
 def _match_type(
     query: str,
-    document: dict,
+    doc_title: str,
     keyword_matches: Optional[list],
     alias_matches: Optional[list],
 ) -> int:
-    doc_title = (document.get("title") or "").strip().lower()
+    doc_title = (doc_title or "").strip().lower()
     if not doc_title:
         return 0
     if keyword_matches:
@@ -229,11 +217,8 @@ def _match_type(
     return 0
 
 
-def _bias_for_document(document: dict, bias_map: Optional[dict]) -> float:
-    if not bias_map:
-        return 0.0
-    doc_title = document.get("title")
-    if doc_title is None:
+def _bias_for_title(doc_title: str, bias_map: Optional[dict]) -> float:
+    if not bias_map or not doc_title:
         return 0.0
     return float(bias_map.get(doc_title, 0.0))
 
@@ -252,15 +237,16 @@ class FeatureExtractor:
     """
 
     def __init__(self, config: Optional[Any] = None):
-        # Accept a DocumentConfig or fall back to sensible defaults
-        if config is not None:
-            self.domain_id: int = getattr(config, "domain_id", 0)
-            self.bias_map: dict = getattr(config, "bias_map", {}) or {}
-            self.field_mapping: Optional[dict] = getattr(config, "field_mapping", None)
-        else:
-            self.domain_id = 0
-            self.bias_map = {}
-            self.field_mapping = None
+        # Accept a DocumentConfig (or any object with the same attributes) and
+        # fall back to DocumentConfig's defaults.  Every title / hierarchy /
+        # embedding lookup below goes through these so a schema with e.g.
+        # ``title_field="name"`` produces the same features as the default one.
+        self.domain_id: int = getattr(config, "domain_id", 0)
+        self.bias_map: dict = getattr(config, "bias_map", None) or {}
+        self.field_mapping: Optional[dict] = getattr(config, "field_mapping", None)
+        self.title_field: str = getattr(config, "title_field", None) or "title"
+        self.embedding_field: str = getattr(config, "embedding_field", None) or "embedding"
+        self.hierarchy: List[str] = list(getattr(config, "hierarchy", None) or _HIERARCHY_FIELDS)
 
     # ------------------------------------------------------------------
     # Public API
@@ -286,15 +272,17 @@ class FeatureExtractor:
         nested_text = _get_nested_text(document, self.field_mapping)
         full_text = f"{doc_text} {nested_text}".strip() if nested_text else doc_text
 
+        doc_title = str(document.get(self.title_field) or "")
+
         feat_bm25 = _compute_bm25_score(query, full_text)
-        feat_alias = self._alias_match_flag(document, alias_matches)
-        feat_keyword = self._keyword_match_flag(document, keyword_matches)
+        feat_alias = self._alias_match_flag(doc_title, alias_matches)
+        feat_keyword = self._keyword_match_flag(doc_title, keyword_matches)
         raw_len = len(full_text)
         feat_doc_len = math.log1p(raw_len)
         feat_query_len = len(query)
-        feat_depth = _section_depth(document, self.field_mapping)
+        feat_depth = _section_depth(document, self.hierarchy)
         feat_emb_cos = _cosine_similarity(query_embedding, doc_embedding)
-        feat_match_type = _match_type(query, document, keyword_matches, alias_matches)
+        feat_match_type = _match_type(query, doc_title, keyword_matches, alias_matches)
         feat_score_gap = (float(top_score) - semantic_score) if top_score is not None else 0.0
 
         query_tokens = set(_tokenize(query))
@@ -304,10 +292,9 @@ class FeatureExtractor:
         else:
             feat_coverage = 0.0
 
-        doc_title = document.get("title") or ""
         feat_title_sim = _jaccard_similarity(query, doc_title)
         feat_nested = int(_has_nested(document, self.field_mapping))
-        feat_bias = _bias_for_document(document, self.bias_map)
+        feat_bias = _bias_for_title(doc_title, self.bias_map)
 
         return {
             "semantic_score": semantic_score,
@@ -351,7 +338,7 @@ class FeatureExtractor:
             top_score = max((float(score) for _doc, score in results), default=0.0)
         feature_list: List[Dict[str, float]] = []
         for doc, score in results:
-            doc_embedding = doc.get("embedding") if isinstance(doc, dict) else None
+            doc_embedding = doc.get(self.embedding_field) if isinstance(doc, dict) else None
             features = self.extract_features(
                 query=query,
                 document=doc,
@@ -379,10 +366,10 @@ class FeatureExtractor:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _alias_match_flag(document: dict, alias_matches: Optional[list]) -> int:
+    def _alias_match_flag(doc_title: str, alias_matches: Optional[list]) -> int:
         if not alias_matches:
             return 0
-        doc_title = (document.get("title") or "").lower()
+        doc_title = (doc_title or "").lower()
         if not doc_title:
             return 0
         for match in alias_matches:
@@ -395,10 +382,10 @@ class FeatureExtractor:
         return 0
 
     @staticmethod
-    def _keyword_match_flag(document: dict, keyword_matches: Optional[list]) -> int:
+    def _keyword_match_flag(doc_title: str, keyword_matches: Optional[list]) -> int:
         if not keyword_matches:
             return 0
-        doc_title = (document.get("title") or "").lower()
+        doc_title = (doc_title or "").lower()
         if not doc_title:
             return 0
         for match in keyword_matches:

@@ -22,11 +22,34 @@ from arf.document import Document, DocumentConfig
 from arf.features import FeatureExtractor, cosine_similarity
 from arf.query_graph import follow_rephrase_chain
 from arf.score_parser import adjust_score as _adjust_score
-from arf.triage import Triage, _default_key_fn
+from arf.triage import Triage
 
 logger = logging.getLogger(__name__)
 
 Scored = Tuple[Any, float]
+
+
+def _make_key_fn(config: DocumentConfig) -> Callable[[Any], Any]:
+    """Build a dedupe key function that honours ``config.id_field``.
+
+    Falls back the same way :meth:`Document.from_dict` does (``_id``, ``id``),
+    then to the configured title field, then to object identity.
+    """
+
+    def key_fn(item: Any) -> Any:
+        if isinstance(item, dict):
+            for fld in (config.id_field, "_id", "id"):
+                val = item.get(fld)
+                if val is not None and val != "":
+                    return str(val)
+            title = item.get(config.title_field)
+            if title:
+                return ("title", str(title))
+            return id(item)
+        item_id = getattr(item, "id", None)
+        return str(item_id) if item_id else id(item)
+
+    return key_fn
 
 
 class Pipeline:
@@ -131,6 +154,7 @@ class Pipeline:
         self.doc_config = doc_config or DocumentConfig()
         self.triage = triage or Triage()
         self.features = FeatureExtractor(self.doc_config)
+        self._key_fn = _make_key_fn(self.doc_config)
 
         self.search_fn = search_fn
         self.embed_fn = embed_fn
@@ -308,7 +332,7 @@ class Pipeline:
             logger.debug("Keeping %d unreviewed candidate(s) (no reviewer configured)", len(unreviewed))
 
         # Merge all accepted
-        merged = self.triage.dedupe(result.accepted, mlp_accepted, llm_verified, unreviewed)
+        merged = self.triage.dedupe(result.accepted, mlp_accepted, llm_verified, unreviewed, key_fn=self._key_fn)
 
         # Gap filter
         if merged:
@@ -328,14 +352,14 @@ class Pipeline:
         present in both lists ends up with its (boosted) cosine score.
         """
         if self.keyword_mode == "max":
-            return self.triage.dedupe(candidates, kw_results)
+            return self.triage.dedupe(candidates, kw_results, key_fn=self._key_fn)
 
         floor = self.keyword_floor if self.keyword_floor is not None else self.triage.verify_threshold
-        semantic_by_key = {_default_key_fn(item): float(score) for item, score in candidates}
+        semantic_by_key = {self._key_fn(item): float(score) for item, score in candidates}
 
         rescored: List[Scored] = []
         for item, _keyword_score in kw_results:
-            key = _default_key_fn(item)
+            key = self._key_fn(item)
             if key in semantic_by_key:
                 base = semantic_by_key[key]
             else:
@@ -343,7 +367,7 @@ class Pipeline:
                 base = cosine_similarity(query_embedding, doc_embedding) if doc_embedding is not None else floor
             rescored.append((item, min(1.0, base + self.keyword_boost)))
 
-        return self.triage.dedupe(candidates, rescored)
+        return self.triage.dedupe(candidates, rescored, key_fn=self._key_fn)
 
     def _embedding_of(self, item: Any) -> Optional[Any]:
         if isinstance(item, dict):

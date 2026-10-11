@@ -144,6 +144,10 @@ vector = extractor.to_vector(features)  # [0.85, 4.2, 0, 0, ...]
 | `has_nested_content` | Whether document has children |
 | `bias_adjustment` | Configurable per-document bias |
 
+All title, hierarchy, text and embedding lookups go through your `DocumentConfig`
+(`title_field`, `hierarchy`, `text_fields`, `children_fields`, `embedding_field`), so a schema
+with `title_field="name"` produces the same features as the default one.
+
 ### Triage — threshold + gap + zone routing
 
 ```python

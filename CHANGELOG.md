@@ -33,6 +33,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   computed `score_gap_from_top` against the review band's own top instead of the query's top.
   Both now flow through `_mlp_triage`; `sample-project/train.py` passes the same global top
   (`arf/pipeline.py`, `sample-project/train.py`)
+- **`FeatureExtractor` ignored `DocumentConfig`** — it read `document["title"]` directly (so
+  `title_similarity`, `keyword_match`, `alias_match`, `match_type` and `bias_adjustment` were 0 for
+  any schema with a custom `title_field`), counted depth against a fixed legal hierarchy instead
+  of `config.hierarchy`, and read embeddings from a hard-coded `"embedding"` key. All lookups now
+  honour the config (`arf/features.py`)
+- **Pipeline dedupe ignored `DocumentConfig.id_field`** — documents were keyed by `_id`/`id`/title,
+  so with a custom id field two different documents sharing a title collapsed into one
+  (`arf/pipeline.py`)
 - **Threshold-calibration warning** — the pipeline logs a one-time warning (with the top observed
   score) when triage rejects every candidate, which usually means the thresholds don't match the
   embedding model's score range (`arf/pipeline.py`)
