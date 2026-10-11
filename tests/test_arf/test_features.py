@@ -83,13 +83,43 @@ def test_with_document_config():
         bias_map={"Test Doc": -0.1},
     )
     ext = FeatureExtractor(cfg)
-    # The bias_map lookup uses the "title" key from the raw dict,
-    # so we need to also include "title" or the feature extractor
-    # looks up doc.get("title") which is the default field name.
-    doc = {"name": "Test Doc", "title": "Test Doc", "body": "Some content", "category": "Legal"}
-    features = ext.extract_features("test query", doc, 0.80)
+    # No "title" key at all — every lookup must go through the configured fields.
+    doc = {"name": "Test Doc", "body": "Some content", "category": "Legal"}
+    features = ext.extract_features("test doc query", doc, 0.80)
     assert features["domain_type"] == 3
     assert features["bias_adjustment"] == -0.1
+    assert features["section_depth"] == 2  # name + category
+    assert features["title_similarity"] > 0
+    assert features["document_length"] > 0  # body via text_fields
+
+
+def test_custom_title_field_drives_match_features():
+    ext = FeatureExtractor(DocumentConfig(title_field="name", text_fields=["text"]))
+    doc = {"name": "Spicy Ramen", "text": "Noodles in a hot broth."}
+    features = ext.extract_features(
+        "spicy ramen", doc, 0.7, keyword_matches=["Spicy Ramen"], alias_matches=[("ramen", "Spicy Ramen")]
+    )
+    assert features["keyword_match"] == 1
+    assert features["alias_match"] == 1
+    assert features["match_type"] == 2
+
+
+def test_custom_hierarchy_section_depth():
+    ext = FeatureExtractor(DocumentConfig(hierarchy=["cuisine", "category", "title"]))
+    full = {"cuisine": "Japanese", "category": "Soup", "title": "Ramen", "text": "..."}
+    partial = {"cuisine": "Japanese", "title": "Ramen", "text": "..."}
+    assert ext.extract_features("q", full, 0.5)["section_depth"] == 3
+    assert ext.extract_features("q", partial, 0.5)["section_depth"] == 2
+    # Default hierarchy still counts the legal fields of the sample doc.
+    assert FeatureExtractor().extract_features("q", _sample_doc(), 0.5)["section_depth"] == 3
+
+
+def test_custom_embedding_field_in_batch():
+    ext = FeatureExtractor(DocumentConfig(embedding_field="vec"))
+    batch = ext.extract_batch(
+        "q", [({"title": "A", "text": "...", "vec": [1.0, 0.0]}, 0.9)], query_embedding=[1.0, 0.0]
+    )
+    assert round(batch[0]["embedding_cosine_similarity"], 6) == 1.0
 
 
 def test_keyword_match_flag():

@@ -262,6 +262,28 @@ def test_invalid_keyword_mode_raises():
         Pipeline(search_fn=_mock_search, embed_fn=_mock_embed, keyword_mode="rrf")
 
 
+def test_dedupe_uses_configured_id_field():
+    # Two distinct documents sharing a title must not collapse into one, and a
+    # keyword hit with the same configured id must merge with its vector twin.
+    config = DocumentConfig(id_field="pk")
+
+    def search_fn(embedding, top_k):
+        return [
+            ({"pk": "a", "title": "Same Title", "text": "first"}, 0.90),
+            ({"pk": "b", "title": "Same Title", "text": "second"}, 0.88),
+        ]
+
+    pipeline = Pipeline(
+        doc_config=config,
+        search_fn=search_fn,
+        embed_fn=_mock_embed,
+        keyword_fn=lambda q: [({"pk": "a", "title": "Same Title", "text": "first"}, 5.0)],
+    )
+    results = pipeline.run("same title")
+    assert [r["document"].id for r in results] == ["a", "b"]
+    assert round(results[0]["score"], 4) == 0.95  # 0.90 + keyword boost
+
+
 # ---------------------------------------------------------------------------
 # MLP sees the same features it was trained on
 # ---------------------------------------------------------------------------
