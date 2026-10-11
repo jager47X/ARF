@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ARF Search</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+    --line: #e1e0d9; --border: rgba(11,11,11,0.10);
+    --accent: #2a78d6; --accent-track: #cde2fb;
+    --good: #0ca30c; --critical: #d03b3b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+      --line: #2c2c2a; --border: rgba(255,255,255,0.10);
+      --accent: #3987e5; --accent-track: #184f95;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+    --line: #2c2c2a; --border: rgba(255,255,255,0.10);
+    --accent: #3987e5; --accent-track: #184f95;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--ink); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding: 20px 16px 8px; max-width: 880px; margin: 0 auto; }
+  header h1 { font-size: 20px; margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+  header h1 span { color: var(--muted); font-weight: 400; }
+  header a { color: var(--ink-2); text-decoration: none; font-size: 14px; }
+  header a:hover { text-decoration: underline; }
+  main { max-width: 880px; margin: 0 auto; padding: 0 16px 48px; }
+  form { display: flex; gap: 8px; margin: 8px 0 16px; }
+  input[type=search] { flex: 1; min-width: 0; font: inherit; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--ink); }
+  select, button { font: inherit; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--ink); }
+  button.primary { background: var(--accent); color: #fff; border-color: transparent; cursor: pointer; }
+  button.primary[disabled] { opacity: .6; cursor: default; }
+  .strip { display: flex; flex-wrap: wrap; gap: 6px 16px; color: var(--ink-2); font-size: 13px; padding: 8px 0 14px; border-bottom: 1px solid var(--line); margin-bottom: 14px; }
+  .strip b { color: var(--ink); font-weight: 600; }
+  .strip .err { color: var(--critical); }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin-bottom: 10px; }
+  .card .top { display: flex; align-items: baseline; gap: 10px; }
+  .rank { color: var(--muted); font-variant-numeric: tabular-nums; width: 1.6em; }
+  .title { font-weight: 600; font-size: 16px; }
+  .path { color: var(--muted); font-size: 13px; margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 45%; }
+  .meter { display: flex; align-items: center; gap: 10px; margin: 8px 0 6px; font-size: 13px; color: var(--ink-2); }
+  .meter .track { flex: 1; height: 6px; border-radius: 3px; background: var(--accent-track); overflow: hidden; }
+  .meter .fill { height: 100%; background: var(--accent); border-radius: 0 3px 3px 0; }
+  .meter .val { font-variant-numeric: tabular-nums; min-width: 4.5em; text-align: right; color: var(--ink); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+  .chip { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--ink-2); background: transparent; }
+  .chip.accent { border-color: var(--accent); color: var(--ink); }
+  .summary { margin: 6px 0 2px; }
+  .snippet { color: var(--ink-2); font-size: 14px; margin: 4px 0 0; }
+  .context { color: var(--muted); font-size: 13px; margin-top: 6px; }
+  .empty { color: var(--ink-2); padding: 24px 0; }
+  .error { color: var(--critical); padding: 12px 0; }
+  .busy { opacity: .55; transition: opacity .15s; }
+  details.raw { margin-top: 8px; font-size: 13px; color: var(--ink-2); }
+  details.raw pre { white-space: pre-wrap; background: var(--page); border: 1px solid var(--line); border-radius: 6px; padding: 8px; font-size: 12px; margin: 6px 0 0; }
+  .examples { font-size: 13px; color: var(--ink-2); margin-bottom: 10px; }
+  .examples a { color: var(--accent); margin-right: 10px; text-decoration: none; }
+  .examples a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ARF <span>Search</span></h1>
+  <a href="/admin">Admin console →</a>
+</header>
+<main>
+  <form id="f" autocomplete="off">
+    <input id="q" type="search" placeholder="Ask something about the corpus…" aria-label="Query" required>
+    <select id="k" aria-label="Results">
+      <option value="5">top 5</option>
+      <option value="10" selected>top 10</option>
+      <option value="20">top 20</option>
+    </select>
+    <button class="primary" id="go" type="submit">Search</button>
+  </form>
+  <div class="examples" id="examples"></div>
+  <div id="strip" class="strip" hidden></div>
+  <div id="out"></div>
+</main>
+<script>
+(function () {
+  const form = document.getElementById('f');
+  const q = document.getElementById('q');
+  const k = document.getElementById('k');
+  const go = document.getElementById('go');
+  const out = document.getElementById('out');
+  const strip = document.getElementById('strip');
+  const examples = document.getElementById('examples');
+
+  const EXAMPLES = ['freedom of speech', 'unreasonable searches', 'right to vote', 'due process of law', 'who declares war'];
+  examples.innerHTML = 'Try: ' + EXAMPLES.map(e => `<a href="#" data-q="${esc(e)}">${esc(e)}</a>`).join('');
+  examples.addEventListener('click', ev => {
+    const a = ev.target.closest('a[data-q]'); if (!a) return;
+    ev.preventDefault(); q.value = a.dataset.q; form.requestSubmit();
+  });
+
+  function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+  function fmt(n, d = 3) { return (n == null) ? '–' : Number(n).toFixed(d); }
+
+  const STAGE = {
+    threshold: ['✓', 'Accepted by threshold'],
+    mlp: ['◆', 'Accepted by MLP'],
+    rerank: ['◇', 'Accepted by re-ranker'],
+    llm: ['✎', 'Verified by LLM'],
+    llm_error: ['!', 'Kept — LLM call failed'],
+    unreviewed: ['?', 'Kept unreviewed'],
+  };
+
+  function renderStats(s) {
+    if (!s) { strip.hidden = true; return; }
+    const parts = [];
+    if (s.blocked) parts.push('<span class="err">⛔ blocked by moderation</span>');
+    if (s.cache_hit) parts.push(`<b>cache hit</b>${s.semantic_cache_hit ? ' (semantic)' : ''}${s.cache_hops ? ` · ${s.cache_hops} hop(s)` : ''}`);
+    else parts.push(`fetched <b>${s.fetched}</b>`, `review <b>${s.needs_review}</b>`, `mlp <b>${s.mlp_evaluated}</b>`, `rerank <b>${s.rerank_evaluated}</b>`, `llm <b>${s.llm_evaluated}</b>`);
+    if (s.expansions) parts.push(`expansions <b>${s.expansions}</b>`);
+    parts.push(`returned <b>${s.returned}</b>`, `<b>${fmt(s.total_ms, 0)} ms</b>`);
+    if (s.errors && s.errors.length) parts.push(`<span class="err">⚠ ${esc(s.errors.join(', '))} failed</span>`);
+    strip.innerHTML = parts.join('<span aria-hidden="true"> · </span>');
+    strip.hidden = false;
+  }
+
+  function renderResults(data) {
+    if (!data.results.length) { out.innerHTML = '<div class="empty">No results. Try a broader query — or lower the thresholds in the admin console if every candidate is being rejected.</div>'; return; }
+    out.innerHTML = data.results.map((r, i) => {
+      const st = STAGE[r.decided_by] || ['·', r.decided_by || 'unknown'];
+      const chips = [`<span class="chip accent" title="${esc(st[1])}">${st[0]} ${esc(st[1])}</span>`];
+      if (r.llm_score != null) chips.push(`<span class="chip">LLM ${r.llm_score}/9</span>`);
+      if (r.rerank_score != null) chips.push(`<span class="chip">rerank ${fmt(r.rerank_score, 2)}</span>`);
+      if (data.stats && data.stats.cache_hit) chips.push('<span class="chip">from cache</span>');
+      const pct = Math.max(0, Math.min(100, r.score * 100));
+      return `<article class="card">
+        <div class="top"><span class="rank">${i + 1}</span><span class="title">${esc(r.title || r.id)}</span>${r.path ? `<span class="path" title="${esc(r.path)}">${esc(r.path)}</span>` : ''}</div>
+        <div class="meter"><span>score</span><div class="track" role="img" aria-label="score ${fmt(r.score)}"><div class="fill" style="width:${pct}%"></div></div><span class="val">${fmt(r.score)}</span></div>
+        <div class="chips">${chips.join('')}</div>
+        ${r.summary ? `<p class="summary">${esc(r.summary)}</p>` : ''}
+        ${r.snippet ? `<p class="snippet">${esc(r.snippet)}</p>` : ''}
+        ${r.context && r.context.length ? `<div class="context">in: ${esc(r.context.join(' › '))}</div>` : ''}
+      </article>`;
+    }).join('') + `<details class="raw"><summary>Raw response</summary><pre>${esc(JSON.stringify(data, null, 2))}</pre></details>`;
+  }
+
+  form.addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const query = q.value.trim(); if (!query) return;
+    go.disabled = true; out.classList.add('busy');
+    try {
+      const res = await fetch('/api/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query, top_k: Number(k.value) }) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail));
+      renderStats(data.stats); renderResults(data);
+    } catch (err) {
+      strip.hidden = true; out.innerHTML = `<div class="error">⚠ ${esc(err.message)}</div>`;
+    } finally { go.disabled = false; out.classList.remove('busy'); }
+  });
+})();
+</script>
+</body>
+</html>

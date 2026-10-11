@@ -81,6 +81,7 @@ def test_payload_shape_is_versioned_and_json_friendly():
         "score": 0.92,
         "llm_score": None,
         "rerank_score": None,
+        "decided_by": "threshold",
         "summary": "",
     }
     json.dumps(payload)  # must not raise
@@ -133,6 +134,7 @@ def test_cache_hit_serves_rerank_scores():
     assert calls == [1]  # only the 0.78 doc was re-ranked, and only once
     assert [r["rerank_score"] for r in first] == [None, 0.75]
     assert [r["rerank_score"] for r in second] == [None, 0.75]
+    assert [r["decided_by"] for r in second] == ["threshold", "rerank"]  # original decisions survive the cache
 
 
 def test_ttl_expires_entries():

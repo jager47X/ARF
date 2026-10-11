@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ARF Admin</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+    --line: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10);
+    --series-1: #2a78d6; --series-2: #eb6834; --accent: #2a78d6;
+    --good: #0ca30c; --warning: #fab219; --critical: #d03b3b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+      --line: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+      --series-1: #3987e5; --series-2: #d95926; --accent: #3987e5;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+    --line: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+    --series-1: #3987e5; --series-2: #d95926; --accent: #3987e5;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--ink); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; padding: 16px; max-width: 1080px; margin: 0 auto; }
+  header h1 { font-size: 18px; margin: 0 auto 0 0; font-weight: 600; }
+  header h1 span { color: var(--muted); font-weight: 400; }
+  header a { color: var(--ink-2); text-decoration: none; }
+  header input { font: inherit; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--ink); width: 180px; }
+  header label { color: var(--ink-2); display: flex; align-items: center; gap: 6px; }
+  nav { display: flex; gap: 4px; padding: 0 16px; max-width: 1080px; margin: 0 auto; border-bottom: 1px solid var(--line); }
+  nav button { font: inherit; background: none; border: 0; border-bottom: 2px solid transparent; padding: 8px 12px; color: var(--ink-2); cursor: pointer; }
+  nav button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
+  main { max-width: 1080px; margin: 0 auto; padding: 16px 16px 48px; }
+  section[hidden] { display: none; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 14px; }
+  .tile { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+  .tile .label { color: var(--ink-2); font-size: 13px; }
+  .tile .value { font-size: 26px; font-weight: 600; letter-spacing: -0.01em; }
+  .tile .sub { color: var(--muted); font-size: 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 10px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin-bottom: 10px; }
+  .card h2 { font-size: 14px; font-weight: 600; margin: 0 0 2px; display: flex; align-items: baseline; gap: 8px; }
+  .card h2 .sub { color: var(--muted); font-weight: 400; font-size: 12px; }
+  .card h2 button { margin-left: auto; }
+  .chart { margin-top: 10px; }
+  .row { display: grid; grid-template-columns: 150px 1fr 64px; align-items: center; gap: 10px; height: 26px; }
+  .row .name { color: var(--ink-2); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .bar { position: relative; height: 18px; }
+  .row .bar i { position: absolute; left: 0; top: 2px; height: 14px; border-radius: 0 4px 4px 0; background: var(--series-1); display: block; min-width: 2px; }
+  .row .bar i.ms { background: var(--series-2); }
+  .row .bar i:hover, .row .bar i:focus { outline: 2px solid var(--surface); outline-offset: -2px; filter: brightness(1.08); }
+  .row .num { font-variant-numeric: tabular-nums; text-align: right; color: var(--ink); font-size: 13px; }
+  .baseline { border-left: 1px solid var(--axis); margin-left: 160px; height: 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--ink-2); font-weight: 500; }
+  td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
+  .tbl[hidden] { display: none; }
+  button, select, input, textarea { font: inherit; }
+  button { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--ink); cursor: pointer; }
+  button.primary { background: var(--accent); color: #fff; border-color: transparent; }
+  button.small { font-size: 12px; padding: 3px 8px; }
+  .status { display: inline-flex; align-items: center; gap: 6px; }
+  .status .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .ok .dot { background: var(--good); } .bad .dot { background: var(--critical); } .warn .dot { background: var(--warning); }
+  .muted { color: var(--muted); }
+  .msg { margin: 8px 0; min-height: 1.4em; }
+  .msg.err { color: var(--critical); } .msg.ok { color: var(--good); }
+  form.cfg { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px 16px; }
+  form.cfg fieldset { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px 10px; margin: 0; }
+  form.cfg legend { color: var(--ink-2); font-size: 12px; padding: 0 4px; }
+  form.cfg label { display: grid; grid-template-columns: 1fr 110px; align-items: center; gap: 8px; margin: 4px 0; font-size: 13px; color: var(--ink-2); }
+  form.cfg input, form.cfg select { padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--page); color: var(--ink); width: 100%; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .chip { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--ink-2); }
+  .chip.on { border-color: var(--accent); color: var(--ink); }
+  textarea { width: 100%; min-height: 160px; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--page); color: var(--ink); font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  pre { white-space: pre-wrap; background: var(--page); border: 1px solid var(--line); border-radius: 6px; padding: 8px; font-size: 12px; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+  .busy { opacity: .55; transition: opacity .15s; }
+  #tip { position: fixed; pointer-events: none; background: var(--ink); color: var(--page); padding: 4px 8px; border-radius: 6px; font-size: 12px; display: none; z-index: 10; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ARF <span>Admin</span></h1>
+  <label>token <input id="token" type="password" placeholder="X-ARF-Admin-Token" autocomplete="off"></label>
+  <label><input id="auto" type="checkbox" checked> auto-refresh</label>
+  <button id="refresh" class="small">Refresh</button>
+  <a href="/">← Search</a>
+</header>
+<nav role="tablist">
+  <button role="tab" aria-selected="true" data-tab="overview">Overview</button>
+  <button role="tab" aria-selected="false" data-tab="config">Config</button>
+  <button role="tab" aria-selected="false" data-tab="runs">Runs</button>
+  <button role="tab" aria-selected="false" data-tab="evaluate">Evaluate</button>
+</nav>
+<main>
+  <div id="msg" class="msg"></div>
+
+  <section id="tab-overview">
+    <div class="tiles" id="tiles"></div>
+    <div class="grid">
+      <div class="card">
+        <h2>Candidate funnel <span class="sub">all runs, counts</span><button class="small" data-toggle="funnel">Table</button></h2>
+        <div class="chart" id="funnel"></div>
+        <div class="tbl" id="funnel-tbl" hidden></div>
+      </div>
+      <div class="card">
+        <h2>Where the time goes <span class="sub">avg ms per run, by stage</span><button class="small" data-toggle="stages">Table</button></h2>
+        <div class="chart" id="stages"></div>
+        <div class="tbl" id="stages-tbl" hidden></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Errors by stage <span class="sub">swallowed failures, see on_error</span><button class="small" id="reset">Reset stats</button></h2>
+      <div id="errors" class="muted">No errors recorded.</div>
+    </div>
+  </section>
+
+  <section id="tab-config" hidden>
+    <div class="card">
+      <h2>Live settings <span class="sub">applied to the running pipeline immediately; not persisted</span><button class="primary small" id="save">Save</button></h2>
+      <form class="cfg" id="cfg" onsubmit="return false"></form>
+      <div class="chips" id="slots"></div>
+    </div>
+  </section>
+
+  <section id="tab-runs" hidden>
+    <div class="card">
+      <h2>Recent runs <span class="sub">newest first</span></h2>
+      <div id="runs"></div>
+    </div>
+  </section>
+
+  <section id="tab-evaluate" hidden>
+    <div class="card">
+      <h2>Evaluate <span class="sub">labelled queries → quality and cost in one run</span></h2>
+      <p class="muted">JSON array of <code>{"query": "...", "relevant": ["doc-id", ...]}</code> (or <code>{"id": grade}</code>). Up to 500 queries; runs synchronously.</p>
+      <textarea id="dataset">[
+  {"query": "freedom of speech", "relevant": ["us-const-1a"]},
+  {"query": "unreasonable searches", "relevant": ["us-const-4a"]},
+  {"query": "right to vote", "relevant": {"us-const-15a": 2, "us-const-19a": 2}}
+]</textarea>
+      <div class="toolbar">
+        <label>k's <input id="ks" value="1,3,5,10" style="width:110px"></label>
+        <button class="primary" id="run-eval">Run evaluation</button>
+        <button class="small" id="copy-md" hidden>Copy markdown</button>
+      </div>
+      <div id="eval"></div>
+    </div>
+  </section>
+</main>
+<div id="tip" role="tooltip"></div>
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  const tokenInput = $('token'), msg = $('msg'), tip = $('tip');
+  tokenInput.value = sessionStorage.getItem('arf-admin-token') || '';
+  tokenInput.addEventListener('change', () => { sessionStorage.setItem('arf-admin-token', tokenInput.value); load(); });
+
+  function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+  function compact(n) { if (n == null) return '–'; n = Number(n); if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(1) + 'M'; if (Math.abs(n) >= 1e4) return (n / 1e3).toFixed(1) + 'K'; return Number.isInteger(n) ? n.toLocaleString() : n.toFixed(2); }
+  function pct(x) { return x == null ? '–' : (100 * x).toFixed(1) + '%'; }
+  function headers() { const h = { 'Content-Type': 'application/json' }; if (tokenInput.value) h['X-ARF-Admin-Token'] = tokenInput.value; return h; }
+  async function api(path, opts = {}) {
+    const res = await fetch(path, Object.assign({ headers: headers() }, opts));
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail || res.statusText));
+    return data;
+  }
+  function say(text, kind) { msg.textContent = text; msg.className = 'msg ' + (kind || ''); }
+
+  // -- tabs --
+  document.querySelectorAll('nav [role=tab]').forEach(b => b.addEventListener('click', () => {
+    document.querySelectorAll('nav [role=tab]').forEach(x => x.setAttribute('aria-selected', x === b));
+    document.querySelectorAll('main section').forEach(s => s.hidden = s.id !== 'tab-' + b.dataset.tab);
+  }));
+  document.querySelectorAll('[data-toggle]').forEach(b => b.addEventListener('click', () => {
+    const chart = $(b.dataset.toggle), table = $(b.dataset.toggle + '-tbl');
+    const showTable = table.hidden; table.hidden = !showTable; chart.hidden = showTable; b.textContent = showTable ? 'Chart' : 'Table';
+  }));
+
+  // -- tooltip for bars --
+  document.addEventListener('mousemove', ev => {
+    const bar = ev.target.closest('[data-tip]');
+    if (!bar) { tip.style.display = 'none'; return; }
+    tip.textContent = bar.dataset.tip; tip.style.display = 'block';
+    tip.style.left = (ev.clientX + 12) + 'px'; tip.style.top = (ev.clientY + 12) + 'px';
+  });
+
+  // -- charts: single-series horizontal bars, value at the tip, table twin --
+  function bars(el, tblEl, rows, unit, cls) {
+    const max = Math.max(1e-9, ...rows.map(r => r[1]));
+    el.innerHTML = rows.map(([name, v]) => {
+      const w = Math.max(0, 100 * v / max);
+      return `<div class="row"><span class="name" title="${esc(name)}">${esc(name)}</span><div class="bar"><i class="${cls}" style="width:${w}%" tabindex="0" data-tip="${esc(name)}: ${compact(v)}${unit}" aria-label="${esc(name)} ${compact(v)}${unit}"></i></div><span class="num">${compact(v)}${unit}</span></div>`;
+    }).join('') + '<div class="baseline"></div>';
+    tblEl.innerHTML = `<table><thead><tr><th>stage</th><th class="n">value</th></tr></thead><tbody>${rows.map(([n, v]) => `<tr><td>${esc(n)}</td><td class="n">${compact(v)}${unit}</td></tr>`).join('')}</tbody></table>`;
+  }
+
+  const FUNNEL = [['fetched', 'fetched'], ['accepted_direct', 'accepted by threshold'], ['needs_review', 'needs review'], ['mlp_evaluated', 'MLP evaluated'], ['mlp_accepted', 'MLP accepted'], ['rerank_evaluated', 'reranker evaluated'], ['rerank_accepted', 'reranker accepted'], ['llm_evaluated', 'LLM evaluated'], ['llm_accepted', 'LLM accepted'], ['unreviewed_kept', 'kept unreviewed'], ['gap_dropped', 'dropped by gap'], ['returned', 'returned']];
+
+  function renderOverview(s) {
+    const f = s.funnel || {};
+    const tiles = [
+      ['Runs', compact(s.runs), `${s.searched} searched · ${s.blocked} blocked`],
+      ['Cache hit rate', pct(s.cache_hit_rate), `${s.cache_hits} hits · ${s.semantic_cache_hits} semantic`],
+      ['LLM share of candidates', pct(s.llm_share_of_candidates), `${f.llm_evaluated || 0} of ${f.fetched || 0} fetched`],
+      ['LLM calls per query', compact(s.llm_calls_per_query), `${compact(s.llm_calls_avoided)} avoided`],
+      ['Avg latency', compact(s.avg_latency_ms) + ' ms', 'per run, end to end'],
+      ['Errors', compact(Object.values(s.errors_by_stage || {}).reduce((a, b) => a + b, 0)), 'swallowed failures'],
+    ];
+    $('tiles').innerHTML = tiles.map(([l, v, sub]) => `<div class="tile"><div class="label">${esc(l)}</div><div class="value">${esc(v)}</div><div class="sub">${esc(sub)}</div></div>`).join('');
+    bars($('funnel'), $('funnel-tbl'), FUNNEL.map(([k, n]) => [n, f[k] || 0]), '', '');
+    const stages = Object.entries(s.avg_stage_ms || {}).filter(([k]) => k !== 'total').sort((a, b) => b[1] - a[1]);
+    bars($('stages'), $('stages-tbl'), stages.length ? stages : [['(no runs yet)', 0]], ' ms', 'ms');
+    const errs = Object.entries(s.errors_by_stage || {});
+    $('errors').innerHTML = errs.length
+      ? `<table><thead><tr><th>stage</th><th class="n">failures</th></tr></thead><tbody>${errs.map(([k, v]) => `<tr><td><span class="status bad"><span class="dot"></span>${esc(k)}</span></td><td class="n">${v}</td></tr>`).join('')}</tbody></table>`
+      : '<span class="status ok"><span class="dot"></span>No errors recorded.</span>';
+  }
+
+  // -- config --
+  const POLICIES = { llm_mode: ['gate', 'blend'], llm_error_policy: ['keep', 'drop'], unreviewed_policy: ['keep', 'drop'], keyword_mode: ['rescore', 'max'] };
+  const GROUPS = [
+    ['Triage thresholds', [['triage.min_score', 'min_score', 'num'], ['triage.verify_threshold', 'verify_threshold', 'num'], ['triage.accept_threshold', 'accept_threshold', 'num'], ['triage.gap', 'gap', 'num']]],
+    ['Routing zones', [['predict_zones.0', 'MLP zone low', 'num'], ['predict_zones.1', 'MLP zone high', 'num'], ['rerank_zones.0', 'rerank zone low', 'num'], ['rerank_zones.1', 'rerank zone high', 'num']]],
+    ['LLM', [['llm_mode', 'llm_mode', 'sel'], ['llm_pass_score', 'llm_pass_score', 'int'], ['llm_workers', 'llm_workers', 'int'], ['llm_error_policy', 'llm_error_policy', 'sel']]],
+    ['Candidates', [['candidate_multiplier', 'candidate_multiplier', 'num'], ['max_candidates', 'max_candidates (blank = none)', 'int?'], ['max_expansions', 'max_expansions', 'int'], ['max_rephrase', 'max_rephrase', 'int'], ['unreviewed_policy', 'unreviewed_policy', 'sel']]],
+    ['Keywords', [['keyword_mode', 'keyword_mode', 'sel'], ['keyword_floor', 'keyword_floor (blank = verify)', 'num?'], ['keyword_boost', 'keyword_boost', 'num']]],
+    ['Cache', [['cache_ttl', 'cache_ttl seconds (blank = forever)', 'num?'], ['cache_version', 'cache_version (blank = off)', 'str?'], ['cache_similarity_threshold', 'cache_similarity_threshold', 'num'], ['graph_max_hops', 'graph_max_hops', 'int']]],
+  ];
+  function get(cfg, path) { return path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), cfg); }
+  function renderConfig(cfg) {
+    $('cfg').innerHTML = GROUPS.map(([title, fields]) => `<fieldset><legend>${esc(title)}</legend>${fields.map(([path, label, type]) => {
+      const v = get(cfg, path);
+      if (type === 'sel') return `<label>${esc(label)}<select name="${path}">${POLICIES[path].map(o => `<option ${o === v ? 'selected' : ''}>${o}</option>`).join('')}</select></label>`;
+      const step = type.startsWith('int') ? '1' : '0.01';
+      return `<label>${esc(label)}<input name="${path}" type="${type.startsWith('str') ? 'text' : 'number'}" step="${step}" value="${v == null ? '' : esc(v)}"></label>`;
+    }).join('')}</fieldset>`).join('');
+    $('slots').innerHTML = Object.entries(cfg.slots || {}).map(([k, on]) => `<span class="chip ${on ? 'on' : ''}" title="${on ? 'wired' : 'not configured'}">${on ? '●' : '○'} ${esc(k)}</span>`).join('');
+  }
+  function readConfig() {
+    const out = { triage: {}, predict_zones: [null, null], rerank_zones: [null, null] };
+    for (const [, fields] of GROUPS) for (const [path, , type] of fields) {
+      const el = $('cfg').elements[path]; const raw = el.value.trim();
+      let v;
+      if (type === 'sel') v = raw;
+      else if (type.startsWith('str')) v = raw || null;
+      else if (raw === '') { if (!type.endsWith('?')) { throw new Error(`${path} is required`); } v = null; }
+      else v = Number(raw);
+      const parts = path.split('.');
+      if (parts.length === 2) out[parts[0]][isNaN(parts[1]) ? parts[1] : Number(parts[1])] = v; else out[path] = v;
+    }
+    return out;
+  }
+  $('save').addEventListener('click', async () => {
+    try { const cfg = await api('/admin/api/config', { method: 'PUT', body: JSON.stringify(readConfig()) }); renderConfig(cfg); say('Settings applied.', 'ok'); }
+    catch (e) { say('Not saved: ' + e.message, 'err'); }
+  });
+
+  // -- runs --
+  function renderRuns(runs) {
+    if (!runs.length) { $('runs').innerHTML = '<span class="muted">No runs yet — try a query on the search page.</span>'; return; }
+    const rows = runs.slice().reverse().map(r => `<tr>
+      <td class="muted">${new Date(r.started_at * 1000).toLocaleTimeString()}</td>
+      <td title="${esc(r.query)}">${esc(r.query.length > 48 ? r.query.slice(0, 48) + '…' : r.query)}</td>
+      <td>${r.blocked ? 'blocked' : r.cache_hit ? (r.semantic_cache_hit ? 'semantic hit' : 'hit') : '–'}</td>
+      <td class="n">${r.fetched}</td><td class="n">${r.needs_review}</td><td class="n">${r.mlp_evaluated}</td><td class="n">${r.rerank_evaluated}</td><td class="n">${r.llm_evaluated}</td><td class="n">${r.returned}</td>
+      <td class="n">${compact(r.total_ms)}</td>
+      <td>${r.errors.length ? `<span class="status bad"><span class="dot"></span>${esc(r.errors.join(', '))}</span>` : ''}</td></tr>`).join('');
+    $('runs').innerHTML = `<table><thead><tr><th>time</th><th>query</th><th>cache</th><th class="n">fetched</th><th class="n">review</th><th class="n">mlp</th><th class="n">rerank</th><th class="n">llm</th><th class="n">returned</th><th class="n">ms</th><th>errors</th></tr></thead><tbody>${rows}</tbody></table>`;
+  }
+
+  // -- evaluate --
+  let lastMarkdown = '';
+  $('run-eval').addEventListener('click', async () => {
+    let dataset;
+    try { dataset = JSON.parse($('dataset').value); } catch (e) { say('Dataset is not valid JSON: ' + e.message, 'err'); return; }
+    const ks = $('ks').value.split(',').map(s => Number(s.trim())).filter(n => n > 0);
+    $('eval').classList.add('busy'); say('Evaluating…');
+    try {
+      const r = await api('/admin/api/evaluate', { method: 'POST', body: JSON.stringify({ dataset, ks }) });
+      lastMarkdown = r.markdown; $('copy-md').hidden = false;
+      const m = Object.entries(r.metrics);
+      $('eval').innerHTML = `<table><thead><tr><th>metric</th><th class="n">mean over ${r.n_queries} queries</th></tr></thead><tbody>${m.map(([k, v]) => `<tr><td>${esc(k)}</td><td class="n">${Number(v).toFixed(4)}</td></tr>`).join('')}
+        <tr><td>llm_share_of_candidates</td><td class="n">${pct(r.stats.llm_share_of_candidates)}</td></tr><tr><td>llm_calls_per_query</td><td class="n">${compact(r.stats.llm_calls_per_query)}</td></tr><tr><td>cache_hit_rate</td><td class="n">${pct(r.stats.cache_hit_rate)}</td></tr><tr><td>avg_latency_ms</td><td class="n">${compact(r.stats.avg_latency_ms)}</td></tr></tbody></table>
+        <details><summary class="muted">Per query</summary><table><thead><tr><th>query</th><th>retrieved</th><th class="n">mrr</th><th class="n">recall@${ks[ks.length - 1]}</th></tr></thead><tbody>${r.per_query.map(q => `<tr><td>${esc(q.query)}</td><td class="muted">${esc(q.retrieved.join(', '))}</td><td class="n">${q.metrics.mrr.toFixed(2)}</td><td class="n">${(q.metrics['recall@' + ks[ks.length - 1]] ?? 0).toFixed(2)}</td></tr>`).join('')}</tbody></table></details>`;
+      say(`Evaluated ${r.n_queries} queries.`, 'ok'); load();
+    } catch (e) { say('Evaluation failed: ' + e.message, 'err'); }
+    finally { $('eval').classList.remove('busy'); }
+  });
+  $('copy-md').addEventListener('click', () => navigator.clipboard.writeText(lastMarkdown).then(() => say('Markdown copied.', 'ok')));
+
+  $('reset').addEventListener('click', async () => { try { await api('/admin/api/stats/reset', { method: 'POST' }); say('Stats reset.', 'ok'); load(); } catch (e) { say(e.message, 'err'); } });
+  $('refresh').addEventListener('click', load);
+
+  let configRendered = false;
+  async function load() {
+    try {
+      const data = await api('/admin/api/stats?limit=100');
+      renderOverview(data.summary); renderRuns(data.recent);
+      if (!configRendered) { renderConfig(data.config); configRendered = true; }
+      if (msg.classList.contains('err') && msg.textContent.startsWith('Cannot reach')) say('');
+    } catch (e) { say('Cannot reach the admin API: ' + e.message, 'err'); }
+  }
+  load();
+  setInterval(() => { if ($('auto').checked && !document.hidden) load(); }, 5000);
+})();
+</script>
+</body>
+</html>
