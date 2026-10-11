@@ -28,6 +28,7 @@ class DocumentConfig:
         children_fields: Field names for nested child arrays (e.g. clauses, sections).
         hierarchy: Ordered list of field names representing the document tree
             from root to leaf.  Used to compute ``depth`` and ``path``.
+        embedding_field: Field name holding the document's stored embedding.
         domain_id: Integer encoding for this domain (used as a feature).
         bias_map: Optional mapping of title -> score adjustment.
     """
@@ -35,6 +36,7 @@ class DocumentConfig:
     id_field: str = "_id"
     title_field: str = "title"
     parent_field: str = "parent_id"
+    embedding_field: str = "embedding"
     text_fields: List[str] = field(default_factory=lambda: ["text", "summary", "content", "body"])
     children_fields: List[str] = field(default_factory=lambda: ["clauses", "sections"])
     hierarchy: List[str] = field(default_factory=lambda: list(_DEFAULT_HIERARCHY))
@@ -111,12 +113,12 @@ class Document:
         children = _extract_children(data, config)
         depth_val = _compute_depth(data, config.hierarchy)
         path_val = _compute_path(data, config.hierarchy)
-        embedding = data.get("embedding")
+        embedding = data.get(config.embedding_field)
 
         metadata = {
             k: v
             for k, v in data.items()
-            if k not in (config.id_field, "embedding")
+            if k not in (config.id_field, config.embedding_field)
         }
 
         return cls(
@@ -159,7 +161,7 @@ def _extract_children(data: dict, config: DocumentConfig) -> Optional[List[Docum
                     id=str(item.get(config.id_field, item.get("_id", ""))),
                     title=child_title,
                     content=text,
-                    embedding=item.get("embedding"),
+                    embedding=item.get(config.embedding_field),
                 ))
             elif isinstance(item, str):
                 children.append(Document(content=item))

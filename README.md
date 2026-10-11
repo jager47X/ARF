@@ -167,6 +167,28 @@ rejected, the pipeline logs a one-time warning with the top observed score to he
 uncertain and there is no `llm_fn`), "needs review" candidates are returned at their retrieval
 score instead of being discarded. Pass `Pipeline(..., unreviewed_policy="drop")` to discard them.
 
+### Hybrid retrieval — `keyword_fn`
+
+```python
+pipeline = Pipeline(
+    ...,
+    keyword_fn=my_bm25_search,   # (query) → [(dict, score)]  — any lexical/full-text search
+    keyword_boost=0.05,          # bonus for every keyword hit (default)
+)
+```
+
+Keyword scores (BM25, text-index ranks) are not comparable with cosine similarities, so ARF
+puts every keyword hit on the semantic scale before merging:
+
+1. A hit that is **also a vector candidate** keeps its cosine score.
+2. A **keyword-only** hit with a stored embedding (`DocumentConfig.embedding_field`, default
+   `"embedding"`) is scored by cosine against the query embedding.
+3. A keyword-only hit **without** an embedding gets `keyword_floor` (default: `verify_threshold`),
+   so it is sent for review rather than accepted or rejected blindly.
+
+Every hit then receives `keyword_boost`. Set `keyword_mode="max"` to merge raw keyword scores
+as-is (only sensible if they are already cosine-like).
+
 ### QueryGraph — rephrase chain walk
 
 ```python
@@ -229,6 +251,7 @@ Validates documents, computes hierarchy metadata (depth, path), generates embedd
 | `embed_fn` | Embeddings | OpenAI, Voyage AI, Cohere, sentence-transformers, Ollama |
 | `predict_fn` | ML model | scikit-learn, XGBoost, PyTorch, any callable |
 | `llm_fn` | LLM verification | OpenAI, Anthropic, Ollama, Llama.cpp, any API |
+| `keyword_fn` | Lexical / full-text search | BM25, Elasticsearch, MongoDB text index, SQL `LIKE` |
 | `cache_lookup/store` | Cache | Redis, MongoDB, SQLite, in-memory dict |
 | `resolve_fn` | Parent lookup | Any database query |
 | `summarize_fn` | Answer generation | Any LLM |

@@ -4,6 +4,7 @@ import logging
 
 import pytest
 
+from arf.document import DocumentConfig
 from arf.pipeline import Pipeline
 from arf.triage import Triage
 
@@ -177,3 +178,84 @@ def test_all_candidates_rejected_warns_once(caplog):
     assert len(warnings) == 1
     assert "0.480" in warnings[0].getMessage()
     assert "min_score=0.65" in warnings[0].getMessage()
+
+
+# ---------------------------------------------------------------------------
+# Keyword hits merged on the semantic scale
+# ---------------------------------------------------------------------------
+
+
+def _scores_by_id(results):
+    return {r["document"].id: round(r["score"], 4) for r in results}
+
+
+def test_keyword_hit_also_in_vector_results_keeps_cosine_plus_boost():
+    # BM25-style score (12.5) must NOT replace the 0.78 cosine score.
+    def keyword_fn(query):
+        return [({"_id": "2", "title": "5th Amendment", "text": "No person shall..."}, 12.5)]
+
+    pipeline = Pipeline(search_fn=_mock_search, embed_fn=_mock_embed, keyword_fn=keyword_fn)
+    scores = _scores_by_id(pipeline.run("due process"))
+    assert scores["2"] == 0.83  # 0.78 + 0.05 boost, still in the review band
+
+
+def test_keyword_only_hit_is_rescored_by_cosine_against_its_embedding():
+    # Identical embedding → cosine 1.0 → capped at 1.0 → accepted and ranked first.
+    def keyword_fn(query):
+        return [({"_id": "kw", "title": "Keyword doc", "text": "...", "embedding": [0.1] * 10}, 3.0)]
+
+    pipeline = Pipeline(search_fn=_mock_search, embed_fn=_mock_embed, keyword_fn=keyword_fn)
+    results = pipeline.run("due process")
+    assert results[0]["document"].id == "kw"
+    assert results[0]["score"] == 1.0
+
+
+def test_keyword_only_hit_without_embedding_goes_to_review():
+    def keyword_fn(query):
+        return [({"_id": "kw", "title": "Keyword doc", "text": "..."}, 99.0)]
+
+    # Default floor = verify_threshold (0.70) + 0.05 boost → 0.75 → "needs review".
+    kept = Pipeline(search_fn=_mock_search, embed_fn=_mock_embed, keyword_fn=keyword_fn)
+    assert _scores_by_id(kept.run("q"))["kw"] == 0.75
+
+    # ...which is exactly what the unreviewed policy governs, so "drop" removes it.
+    dropped = Pipeline(search_fn=_mock_search, embed_fn=_mock_embed, keyword_fn=keyword_fn, unreviewed_policy="drop")
+    assert "kw" not in _scores_by_id(dropped.run("q"))
+
+
+def test_keyword_floor_and_boost_are_configurable():
+    def keyword_fn(query):
+        return [({"_id": "kw", "title": "Keyword doc", "text": "..."}, 99.0)]
+
+    pipeline = Pipeline(
+        search_fn=_mock_search, embed_fn=_mock_embed, keyword_fn=keyword_fn, keyword_floor=0.90, keyword_boost=0.0
+    )
+    scores = _scores_by_id(pipeline.run("q"))
+    assert scores["kw"] == 0.90  # accepted outright, no boost applied
+    assert scores["2"] == 0.78
+
+
+def test_keyword_rescore_honours_custom_embedding_field():
+    config = DocumentConfig(embedding_field="vec")
+
+    def keyword_fn(query):
+        return [({"_id": "kw", "title": "Keyword doc", "text": "...", "vec": [0.1] * 10}, 1.0)]
+
+    pipeline = Pipeline(doc_config=config, search_fn=_mock_search, embed_fn=_mock_embed, keyword_fn=keyword_fn)
+    assert _scores_by_id(pipeline.run("q"))["kw"] == 1.0
+
+
+def test_keyword_mode_max_merges_raw_scores():
+    # Legacy behaviour: an arbitrary 0.99 "keyword score" is treated as if it were cosine.
+    def keyword_fn(query):
+        return [({"_id": "kw", "title": "Keyword doc", "text": "..."}, 0.99)]
+
+    pipeline = Pipeline(search_fn=_mock_search, embed_fn=_mock_embed, keyword_fn=keyword_fn, keyword_mode="max")
+    results = pipeline.run("q")
+    assert results[0]["document"].id == "kw"
+    assert results[0]["score"] == 0.99
+
+
+def test_invalid_keyword_mode_raises():
+    with pytest.raises(ValueError, match="keyword_mode"):
+        Pipeline(search_fn=_mock_search, embed_fn=_mock_embed, keyword_mode="rrf")
