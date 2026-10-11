@@ -215,6 +215,24 @@ retrieval score, so ranking and the gap filter stay on a single scale. The gap f
 measured on retrieval scores. `llm_mode="blend"` restores the pre-0.3.0 multiplicative blend
 (`parser_range`, default 0.5×–1.5×).
 
+### Failure handling — `on_error`
+
+Optional stages never take the query down: if the cache, the LLM, the MLP or the summarizer
+fails, the pipeline degrades and carries on. Every such failure is logged at `WARNING` and
+passed to an optional hook, so an outage shows up in your logs and metrics rather than as
+quietly thinner results:
+
+```python
+pipeline = Pipeline(
+    ...,
+    on_error=lambda stage, exc: metrics.increment(f"arf.errors.{stage}"),
+    llm_error_policy="keep",   # default: an unverifiable candidate keeps its retrieval score
+)                              # "drop" discards it instead
+```
+
+`stage` is one of `store_query_fn`, `link_fn`, `cache_store`, `alias_fn`, `predict_fn`,
+`llm_fn`, `llm_fn output parsing`, `summarize_fn`.
+
 ### QueryGraph — rephrase chain walk
 
 ```python
